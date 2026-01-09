@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+CODEX_DIR="$HOME/.codex"
+AUTH="$CODEX_DIR/auth.json"
+PROFILES="$CODEX_DIR/profiles"
+USAGE="$PROFILES/usage.tsv"
+
+mkdir -p "$PROFILES"
+chmod 700 "$PROFILES"
+
+usage() {
+  echo "Usage:"
+  echo "  cx save            Save current auth.json"
+  echo "  cx load [id]       Load profile (default: oldest used)"
+  echo "  cx list            List profiles by last used"
+  echo "  cx current         Show current account_id"
+  exit 1
+}
+
+account_id() {
+  jq -r '.tokens.account_id // empty' "$AUTH"
+}
+
+now() {
+  date +%s
+}
+
+touch "$USAGE"
+
+update_usage() {
+  local id="$1"
+  local ts
+  ts="$(now)"
+
+  # remove existing entry
+  grep -v "^$id[[:space:]]" "$USAGE" > "$USAGE.tmp" || true
+  mv "$USAGE.tmp" "$USAGE"
+
+  echo -e "$id\t$ts" >> "$USAGE"
+}
+
+oldest_profile() {
+  sort -k2 -n "$USAGE" | head -n1 | cut -f1
+}
+
+[[ $# -eq 0 ]] && usage
+
+case "$1" in
+  save)
+    [[ -f "$AUTH" ]] || { echo "No auth.json found"; exit 1; }
+
+    ID="$(account_id)"
+    [[ -n "$ID" ]] || { echo "account_id not found"; exit 1; }
+
+    cp "$AUTH" "$PROFILES/$ID.json"
+    update_usage "$ID"
+
+    echo "Saved profile $ID"
+    ;;
+
+  load)
+    if [[ -n "${2:-}" ]]; then
+      ID="$2"
+    else
+      ID="$(oldest_profile)"
+      [[ -n "$ID" ]] || { echo "No profiles available"; exit 1; }
+      echo "Auto-selected oldest profile: $ID"
+    fi
+
+    SRC="$PROFILES/$ID.json"
+    [[ -f "$SRC" ]] || { echo "Profile $ID not found"; exit 1; }
+
+    cp "$SRC" "$AUTH"
+    update_usage "$ID"
+
+    echo "Loaded profile $ID"
+    ;;
+
+  list)
+    printf "%-40s  %s\n" "ACCOUNT_ID" "LAST_USED"
+    sort -k2 -n "$USAGE" | while read -r id ts; do
+      printf "%-40s  %s\n" "$id" "$(date -d "@$ts")"
+    done
+    ;;
+
+  current)
+    [[ -f "$AUTH" ]] || { echo "No active auth"; exit 1; }
+    account_id
+    ;;
+
+  *)
+    usage
+    ;;
+esac
