@@ -28,36 +28,30 @@ personal and team accounts across multiple organizations.
 ## Install
 
 > [!IMPORTANT]
-> Requires [Codex CLI](https://developers.openai.com/codex/cli/).
-
-> [!WARNING]
-> Codex CLI is not included with the ChatGPT Free plan.
+> Requires [Codex CLI](https://developers.openai.com/codex/cli/) (with ChatGPT subscription or OpenAI API key).
 
 > [!TIP]
 > Looking for a Teams promo? [See details](https://www.reddit.com/r/ChatGPTPromptGenius/comments/1lo7v0u/chatgpt_team_for_1_first_month_up_to_5_users/)
 
-### npm (recommended)
+### NPM
 
 ```bash
 npm install -g codex-profiles
 ```
 
-### bun
+### Bun
 
 ```bash
 bun install -g codex-profiles
 ```
 
-The npm/bun installers pull a small JS launcher plus a platform-specific binary
-package (for example, `codex-profiles-linux-x64`).
-
-### Homebrew (macOS)
+### Homebrew
 
 ```bash
 brew install --cask codex-profiles
 ```
 
-### Shell script (recommended for manual install)
+### Manual Install
 
 Automatically detects your OS/architecture, downloads the correct binary, verifies checksums:
 
@@ -65,46 +59,10 @@ Automatically detects your OS/architecture, downloads the correct binary, verifi
 curl -fsSL https://raw.githubusercontent.com/midhunmonachan/codex-profiles/main/install.sh | bash
 ```
 
-Or download and inspect first:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/midhunmonachan/codex-profiles/main/install.sh -o install.sh
-chmod +x install.sh
-./install.sh --help
-```
-
-### GitHub releases (manual)
-
-1. Download the appropriate asset for your OS/arch from the [latest release](https://github.com/midhunmonachan/codex-profiles/releases/latest).
-2. Extract and move the binary into your PATH.
-
-Example (Linux x64):
-
-```bash
-VERSION=0.1.0
-TARGET=x86_64-unknown-linux-gnu
-curl -L -o codex-profiles.tar.gz \
-  "https://github.com/midhunmonachan/codex-profiles/releases/download/v${VERSION}/codex-profiles-${TARGET}.tar.gz"
-tar -xzf codex-profiles.tar.gz
-install -m 755 codex-profiles ~/.local/bin/codex-profiles
-```
-
-### From source
-
-```bash
-cargo install --path .
-```
-
-Or from git:
-
-```bash
-cargo install --git https://github.com/midhunmonachan/codex-profiles --locked
-```
-
 ## Uninstall
 
-> [!IMPORTANT]
-> If you installed the legacy `cx` script, remove it and use this version instead, as it will no longer be supported:
+> [!WARNING]
+> Legacy script support is ending. Remove `cx` and use this version instead.
 >
 > ```bash
 > rm ~/.local/bin/cx
@@ -116,25 +74,25 @@ cargo install --git https://github.com/midhunmonachan/codex-profiles --locked
 > rm ~/.local/bin/mycmd
 > ```
 
-### npm
+### NPM
 
 ```bash
 npm uninstall -g codex-profiles
 ```
 
-### bun
+### Bun
 
 ```bash
 bun uninstall -g codex-profiles
 ```
 
-### Homebrew (macOS)
+### Homebrew
 
 ```bash
 brew uninstall --cask codex-profiles
 ```
 
-### Manual install
+### Manual Uninstall
 
 ```bash
 rm ~/.local/bin/codex-profiles
@@ -172,48 +130,58 @@ Loaded profile mail@company.com (Team)
 > | File | Purpose |
 > | --- | --- |
 > | `{email-plan}.json` | Saved profiles. |
-> | `usage.tsv` | Last-used timestamps. |
-> | `labels.json` | Optional labels. |
-> | `version.json` | Update check cache. |
+> | `profiles.json` | Profile metadata (labels, last-used, active). |
+> | `profiles.lock` | Lock file for safe updates. |
 
 ## FAQ
 
-### Is my auth file uploaded anywhere?
+<details>
+<summary>Is my auth file uploaded anywhere?</summary>
 
-No. Everything stays on your machine. This tool only copies files locally.
+> No. Everything stays on your machine. This tool only copies files locally.
+</details>
 
-### What is a “profile” in this tool?
+<details>
+<summary>What is a “profile” in this tool?</summary>
 
-A profile is a saved copy of your `~/.codex/auth.json`. Each profile represents
-one Codex login.
+> A profile is a saved copy of your `~/.codex/auth.json`. Each profile represents
+> one Codex login.
+</details>
 
-### How do I save and switch between accounts?
+<details>
+<summary>How do I save and switch between accounts?</summary>
 
-Log in with Codex CLI, then run `codex-profiles save --label <name>`. To switch
-later, run `codex-profiles load --label <name>`.
+> Log in with Codex CLI, then run `codex-profiles save --label <name>`. To switch
+> later, run `codex-profiles load --label <name>`.
+</details>
 
-### What happens if I run load without saving?
+<details>
+<summary>What happens if I run load without saving?</summary>
 
-You will be prompted to save the current profile, continue without saving, or
-cancel.
+> You will be prompted to save the current profile, continue without saving, or
+> cancel.
+</details>
 
-### Can I keep personal and work accounts separate?
+<details>
+<summary>Can I keep personal and work accounts separate?</summary>
 
-Yes. Save each account with a label (for example, `personal` and `work`) and
-switch with the label.
+> Yes. Save each account with a label (for example, `personal` and `work`) and
+> switch with the label.
+</details>
 
-### How can I verify my installation?
+<details>
+<summary>How can I verify my installation?</summary>
 
-After installing, verify it works:
-
-```bash
-# Check version
-codex-profiles --help
-
-# Verify Codex CLI is detected
-codex-profiles list
-# Should show: "No profiles saved yet" (not an error about missing Codex CLI)
-```
-
-If you see "Codex CLI not found", install it from https://developers.openai.com/codex/cli/.
-
+> After installing, verify it works:
+>
+> ```bash
+> # Check version
+> codex-profiles --help
+>
+> # Verify Codex CLI is detected
+> codex-profiles list
+> # Should show: "No profiles saved yet" (not an error about missing Codex CLI)
+> ```
+>
+> If you see "Codex CLI not found", install it from [here](https://developers.openai.com/codex/cli/).
+</details>

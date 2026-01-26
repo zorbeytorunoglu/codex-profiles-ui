@@ -25,8 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Terminal styling with `NO_COLOR` and `FORCE_COLOR` support
 - `--plain` flag to disable all styling
 - Profile storage in `~/.codex/profiles/`
-- Label-based profile mapping in `labels.json`
-- Usage tracking in `usage.tsv`
+- Profile metadata (labels, last-used, update cache) stored in `profiles.json`
 - Pre-commit and pre-push hooks for code quality
 - 100% test coverage with 150+ tests
 - Multi-platform CI (Linux, macOS, Windows)
