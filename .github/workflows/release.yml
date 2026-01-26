@@ -162,6 +162,24 @@ jobs:
           scripts/release-artifacts.sh "${version}" dist/artifacts dist
           scripts/verify-artifacts.sh "${version}" dist
 
+      - name: Commit checksums to repo
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          
+          # Copy checksums to repo
+          cp dist/checksums/SHA256SUMS "checksums/v${version}.txt"
+          
+          # Configure git
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # Commit and push
+          git add "checksums/v${version}.txt"
+          git commit -m "chore: add checksums for v${version}"
+          git push origin main
+
       - name: Publish to crates.io
         if: ${{ !contains(github.ref_name, '-') }}
         env:

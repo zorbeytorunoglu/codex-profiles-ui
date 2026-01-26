@@ -57,9 +57,25 @@ package (for example, `codex-profiles-linux-x64`).
 brew install --cask codex-profiles
 ```
 
+### Shell script (recommended for manual install)
+
+Automatically detects your OS/architecture, downloads the correct binary, verifies checksums:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/midhunmonachan/codex-profiles/main/install.sh | bash
+```
+
+Or download and inspect first:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/midhunmonachan/codex-profiles/main/install.sh -o install.sh
+chmod +x install.sh
+./install.sh --help
+```
+
 ### GitHub releases (manual)
 
-1. Download the appropriate asset for your OS/arch from the latest release.
+1. Download the appropriate asset for your OS/arch from the [latest release](https://github.com/midhunmonachan/codex-profiles/releases/latest).
 2. Extract and move the binary into your PATH.
 
 Example (Linux x64):
