@@ -7,29 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.1.0] - 2026-01-26
+## [0.1.0] - 2026-01-27
 
 ### Added
-- Initial release
-- Save current Codex CLI auth profile with optional labels
-- Load saved profiles with interactive picker or by label
-- List all saved profiles ordered by last used
-- Delete profiles with confirmation or by label
-- Display usage details for current profile, all profiles, or by label
+- Save/load Codex CLI auth profiles with optional labels
+- Interactive picker for profile selection
+- List profiles ordered by last used
+- Delete profiles with confirmation
+- Display usage details for current, all, or specific profiles
 - OAuth token refresh on profile load
 - Automatic update checking (24-hour interval)
+- Smart installer with checksum verification and auto-platform detection
+- Cross-platform install.sh support (Linux, macOS, Windows)
+- Download progress indicators in installer
 - Multi-install support (npm, bun, cargo, homebrew, manual)
-- File locking for concurrent-safe usage tracking
-- Atomic file operations for profile and auth data
+- File locking for concurrent-safe operations
 - Support for both OAuth tokens and API keys
 - Terminal styling with `NO_COLOR` and `FORCE_COLOR` support
-- `--plain` flag to disable all styling
+- `--plain` flag to disable styling
 - Profile storage in `~/.codex/profiles/`
-- Profile metadata (labels, last-used, update cache) stored in `profiles.json`
-- Pre-commit and pre-push hooks for code quality
-- 100% test coverage with 150+ tests
-- Multi-platform CI (Linux, macOS, Windows)
-- Cross-compilation for 5 target platforms
+- Contribution guidelines with PR process and code standards
+- Pre-commit and pre-push hooks
+- Comprehensive test suite with 150 tests
+- Cross-compilation for 5 platforms (Linux x64/ARM64, macOS Intel/Apple Silicon, Windows x64)
 
 [Unreleased]: https://github.com/midhunmonachan/codex-profiles/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/midhunmonachan/codex-profiles/releases/tag/v0.1.0
