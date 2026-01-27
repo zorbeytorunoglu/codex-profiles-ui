@@ -47,7 +47,8 @@ detect_platform() {
         *)          error "unsupported OS: $(uname -s)" ;;
     esac
 
-    local machine="$(uname -m)"
+    local machine
+    machine="$(uname -m)"
     case "$machine" in
         x86_64|amd64)       arch="x86_64" ;;
         aarch64|arm64)      arch="aarch64" ;;
@@ -67,11 +68,22 @@ detect_platform() {
 download_file() {
     local url="$1"
     local output="$2"
+    local show_progress="${3:-false}"
     
     if command -v curl > /dev/null 2>&1; then
-        curl -fsSL --proto '=https' --tlsv1.2 "$url" -o "$output" || return 1
+        if [ "$show_progress" = "true" ] && [ -t 1 ]; then
+            # Show progress bar if stdout is a TTY
+            curl -#fL --proto '=https' --tlsv1.2 "$url" -o "$output" || return 1
+        else
+            curl -fsSL --proto '=https' --tlsv1.2 "$url" -o "$output" || return 1
+        fi
     elif command -v wget > /dev/null 2>&1; then
-        wget -q --https-only --secure-protocol=TLSv1_2 "$url" -O "$output" || return 1
+        if [ "$show_progress" = "true" ] && [ -t 1 ]; then
+            # Show progress bar if stdout is a TTY
+            wget --https-only --secure-protocol=TLSv1_2 --show-progress "$url" -O "$output" || return 1
+        else
+            wget -q --https-only --secure-protocol=TLSv1_2 "$url" -O "$output" || return 1
+        fi
     else
         error "need 'curl' or 'wget' to download"
     fi
@@ -81,7 +93,8 @@ verify_checksum() {
     local file="$1"
     local checksum_file="$2"
     
-    local basename="$(basename "$file")"
+    local basename
+    basename="$(basename "$file")"
     local expected actual
     
     expected="$(grep "release/$basename" "$checksum_file" | awk '{print $1}')"
@@ -113,7 +126,8 @@ main() {
     
     info "Installing codex-profiles v$VERSION"
     
-    local target="$(detect_platform)"
+    local target
+    target="$(detect_platform)"
     info "Detected platform: $target"
     
     local base_url="https://github.com/$REPO/releases/download/v$VERSION"
@@ -122,17 +136,18 @@ main() {
     
     local checksum_url="https://raw.githubusercontent.com/$REPO/main/checksums/v${VERSION}.txt"
     
-    local tmpdir="$(mktemp -d)"
-    trap "rm -rf '$tmpdir'" EXIT
+    local tmpdir
+    tmpdir="$(mktemp -d)"
+    trap 'rm -rf "$tmpdir"' EXIT
     
     local archive_path="$tmpdir/$archive_name"
     local checksum_path="$tmpdir/checksums.txt"
     
     info "Downloading binary..."
-    download_file "$archive_url" "$archive_path" || error "failed to download binary from $archive_url"
+    download_file "$archive_url" "$archive_path" "true" || error "failed to download binary from $archive_url"
     
     info "Downloading checksums from repo..."
-    if ! download_file "$checksum_url" "$checksum_path"; then
+    if ! download_file "$checksum_url" "$checksum_path" "false"; then
         warn "Could not download checksum file from repo"
         warn "Proceeding without verification (not recommended)"
     else
@@ -142,29 +157,41 @@ main() {
     info "Extracting..."
     tar -xzf "$archive_path" -C "$tmpdir" || error "extraction failed"
     
-    local binary_path
-    if [ -f "$tmpdir/codex-profiles" ]; then
-        binary_path="$tmpdir/codex-profiles"
-    elif [ -f "$tmpdir/codex-profiles/codex-profiles" ]; then
-        binary_path="$tmpdir/codex-profiles/codex-profiles"
-    else
-        error "binary not found in archive"
+    # Determine binary name based on OS
+    local binary_name="codex-profiles"
+    if [[ "$target" == *"windows"* ]]; then
+        binary_name="codex-profiles.exe"
     fi
     
-    info "Installing to $INSTALL_DIR/codex-profiles"
+    local binary_path
+    if [ -f "$tmpdir/$binary_name" ]; then
+        binary_path="$tmpdir/$binary_name"
+    elif [ -f "$tmpdir/codex-profiles/$binary_name" ]; then
+        binary_path="$tmpdir/codex-profiles/$binary_name"
+    else
+        error "binary not found in archive (looking for $binary_name)"
+    fi
+    
+    info "Installing to $INSTALL_DIR/$binary_name"
     mkdir -p "$INSTALL_DIR"
     
-    if [ -f "$INSTALL_DIR/codex-profiles" ]; then
-        local backup="$INSTALL_DIR/codex-profiles.backup.$(date +%s)"
-        mv "$INSTALL_DIR/codex-profiles" "$backup"
+    if [ -f "$INSTALL_DIR/$binary_name" ]; then
+        local backup
+        backup="$INSTALL_DIR/$binary_name.backup.$(date +%s)"
+        mv "$INSTALL_DIR/$binary_name" "$backup"
         info "Backed up existing binary to $backup"
     fi
     
-    cp "$binary_path" "$INSTALL_DIR/codex-profiles"
-    chmod +x "$INSTALL_DIR/codex-profiles"
+    cp "$binary_path" "$INSTALL_DIR/$binary_name"
     
-    if [ -x "$INSTALL_DIR/codex-profiles" ]; then
-        local installed_version="$("$INSTALL_DIR/codex-profiles" --version 2>&1 | head -1)"
+    # Make executable on Unix-like systems (not needed on Windows)
+    if [[ "$target" != *"windows"* ]]; then
+        chmod +x "$INSTALL_DIR/$binary_name"
+    fi
+    
+    if [ -f "$INSTALL_DIR/$binary_name" ]; then
+        local installed_version
+        installed_version="$("$INSTALL_DIR/$binary_name" --version 2>&1 | head -1)"
         info "Successfully installed: $installed_version"
     else
         error "installation failed: binary is not executable"
@@ -172,10 +199,15 @@ main() {
     
     if ! echo "$PATH" | grep -q "$INSTALL_DIR"; then
         warn "$INSTALL_DIR is not in your PATH"
-        warn "Add this to your shell profile (~/.bashrc, ~/.zshrc, etc.):"
-        echo "  export PATH=\"\$PATH:$INSTALL_DIR\""
+        if [[ "$target" == *"windows"* ]]; then
+            warn "Add this directory to your PATH environment variable"
+            warn "Or run: setx PATH \"%PATH%;$INSTALL_DIR\""
+        else
+            warn "Add this to your shell profile (~/.bashrc, ~/.zshrc, etc.):"
+            echo "  export PATH=\"\$PATH:$INSTALL_DIR\""
+        fi
     else
-        info "Installation complete! Run: codex-profiles --help"
+        info "Installation complete! Run: $binary_name --help"
     fi
 }
 
