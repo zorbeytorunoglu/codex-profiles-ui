@@ -45,12 +45,6 @@ npm install -g codex-profiles
 bun install -g codex-profiles
 ```
 
-### Homebrew
-
-```bash
-brew install --cask codex-profiles
-```
-
 ### Manual Install
 
 Automatically detects your OS/architecture, downloads the correct binary, verifies checksums:
@@ -84,12 +78,6 @@ npm uninstall -g codex-profiles
 
 ```bash
 bun uninstall -g codex-profiles
-```
-
-### Homebrew
-
-```bash
-brew uninstall --cask codex-profiles
 ```
 
 ### Manual Uninstall
