@@ -54,6 +54,7 @@ pub fn package_command_name() -> &'static str {
     "codex-profiles"
 }
 
+#[cfg(unix)]
 const FAIL_SET_PERMISSIONS: usize = 1;
 const FAIL_WRITE_OPEN: usize = 2;
 const FAIL_WRITE_WRITE: usize = 3;
@@ -352,10 +353,9 @@ fn set_profile_permissions(path: &Path, perms: fs::Permissions) -> std::io::Resu
 }
 
 #[cfg(not(unix))]
-fn set_profile_permissions(path: &Path, perms: fs::Permissions) -> std::io::Result<()> {
-    let _ = perms;
-    maybe_fail(FAIL_SET_PERMISSIONS)?;
-    fs::set_permissions(path, perms)
+fn set_profile_permissions(_path: &Path, _perms: fs::Permissions) -> std::io::Result<()> {
+    // No-op on non-Unix platforms - permissions are handled differently
+    Ok(())
 }
 
 #[cfg(test)]

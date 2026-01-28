@@ -16,9 +16,9 @@ concurrency:
 
 jobs:
   tag-check:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Validate tag matches versions
         shell: bash
         run: |
@@ -45,12 +45,12 @@ jobs:
 
   verify:
     needs: tag-check
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       CARGO_INCREMENTAL: "0"
     steps:
-      - uses: actions/checkout@v4
-      - uses: mozilla-actions/sccache-action@v0.0.4
+      - uses: actions/checkout@v6
+      - uses: mozilla-actions/sccache-action@v0.0.9
         id: sccache-verify
         continue-on-error: true
       - name: Disable sccache if setup failed
@@ -62,7 +62,7 @@ jobs:
       - uses: taiki-e/install-action@cargo-audit
       - uses: taiki-e/install-action@cargo-nextest
       - name: Cache cargo bin
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         continue-on-error: true
         with:
           path: ~/.cargo/bin
@@ -85,28 +85,28 @@ jobs:
       fail-fast: true
       matrix:
         include:
-          - runner: ubuntu-latest
+          - runner: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             binary: codex-profiles
           - runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             binary: codex-profiles
-          - runner: macos-13
+          - runner: macos-15-large
             target: x86_64-apple-darwin
             binary: codex-profiles
-          - runner: macos-14
+          - runner: macos-15
             target: aarch64-apple-darwin
             binary: codex-profiles
-          - runner: windows-latest
+          - runner: windows-2025
             target: x86_64-pc-windows-msvc
             binary: codex-profiles.exe
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-      - uses: mozilla-actions/sccache-action@v0.0.4
+      - uses: mozilla-actions/sccache-action@v0.0.9
         id: sccache-build
         continue-on-error: true
       - name: Disable sccache if setup failed
@@ -114,7 +114,7 @@ jobs:
         shell: bash
         run: echo "RUSTC_WRAPPER=" >> $GITHUB_ENV
       - name: Cache cargo bin
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         continue-on-error: true
         with:
           path: ~/.cargo/bin
@@ -134,7 +134,7 @@ jobs:
           echo "Build output:"
           ls -la target/${{ matrix.target }}/release || true
       - name: Upload binary
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: codex-profiles-${{ matrix.target }}
           path: target/${{ matrix.target }}/release/${{ matrix.binary }}
@@ -142,15 +142,15 @@ jobs:
 
   package:
     needs: [build, verify]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: 20
       - name: Cache cargo bin
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         continue-on-error: true
         with:
           path: ~/.cargo/bin
