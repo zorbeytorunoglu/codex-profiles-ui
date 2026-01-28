@@ -22,14 +22,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - uses: mozilla-actions/sccache-action@v0.0.9
-        id: sccache
-        continue-on-error: true
-
-      - name: Disable sccache if setup failed
-        if: steps.sccache.outcome == 'failure'
-        run: echo "RUSTC_WRAPPER=" >> $GITHUB_ENV
-
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
