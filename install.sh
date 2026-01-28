@@ -118,6 +118,12 @@ verify_checksum() {
     info "Checksum verified ✓"
 }
 
+cleanup() {
+    if [ -n "${TMPDIR_INSTALL:-}" ] && [ -d "$TMPDIR_INSTALL" ]; then
+        rm -rf "$TMPDIR_INSTALL"
+    fi
+}
+
 main() {
     need_cmd uname
     need_cmd mkdir
@@ -136,9 +142,9 @@ main() {
     
     local checksum_url="https://raw.githubusercontent.com/$REPO/main/checksums/v${VERSION}.txt"
     
-    local tmpdir
-    tmpdir="$(mktemp -d)"
-    trap 'rm -rf "$tmpdir"' EXIT
+    TMPDIR_INSTALL="$(mktemp -d)"
+    trap cleanup EXIT
+    local tmpdir="$TMPDIR_INSTALL"
     
     local archive_path="$tmpdir/$archive_name"
     local checksum_path="$tmpdir/checksums.txt"
@@ -191,7 +197,8 @@ main() {
     
     if [ -f "$INSTALL_DIR/$binary_name" ]; then
         local installed_version
-        installed_version="$("$INSTALL_DIR/$binary_name" --version 2>&1 | head -1)"
+        installed_version="$("$INSTALL_DIR/$binary_name" --version 2>&1 || echo "unknown")"
+        installed_version="$(echo "$installed_version" | head -1)"
         info "Successfully installed: $installed_version"
     else
         error "installation failed: binary is not executable"
