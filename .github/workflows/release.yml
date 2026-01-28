@@ -69,12 +69,11 @@ jobs:
           key: ${{ runner.os }}-${{ hashFiles('rust-toolchain.toml') }}-cargo-bin
           restore-keys: |
             ${{ runner.os }}-${{ hashFiles('rust-toolchain.toml') }}-cargo-bin
-          save-always: true
       - uses: Swatinem/rust-cache@v2
         continue-on-error: true
         with:
           shared-key: ${{ runner.os }}-verify-${{ hashFiles('rust-toolchain.toml') }}
-          save-if: true
+          save-if: ${{ !cancelled() }}
       - name: Run checks
         run: scripts/check.sh
 
@@ -123,12 +122,11 @@ jobs:
           key: ${{ runner.os }}-${{ matrix.target }}-${{ hashFiles('rust-toolchain.toml') }}-cargo-bin
           restore-keys: |
             ${{ runner.os }}-${{ matrix.target }}-${{ hashFiles('rust-toolchain.toml') }}-cargo-bin
-          save-always: true
       - uses: Swatinem/rust-cache@v2
         continue-on-error: true
         with:
           shared-key: ${{ runner.os }}-${{ matrix.target }}-${{ hashFiles('rust-toolchain.toml') }}
-          save-if: true
+          save-if: ${{ !cancelled() }}
       - name: Cargo build
         shell: bash
         run: |
@@ -161,7 +159,6 @@ jobs:
           key: ${{ runner.os }}-${{ hashFiles('rust-toolchain.toml') }}-cargo-bin
           restore-keys: |
             ${{ runner.os }}-${{ hashFiles('rust-toolchain.toml') }}-cargo-bin
-          save-always: true
       - name: Download build artifacts
         uses: actions/download-artifact@v4
         with:
