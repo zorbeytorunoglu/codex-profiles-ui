@@ -175,6 +175,16 @@ jobs:
           set -euo pipefail
           version="${GITHUB_REF_NAME#v}"
           
+          # Safety gate: only commit to production repository
+          if [[ "${GITHUB_REPOSITORY}" != "midhunmonachan/codex-profiles" ]]; then
+            echo "Skipping checksum commit: not production repository (current: ${GITHUB_REPOSITORY})"
+            echo "Checksums generated but not committed to repo"
+            ls -la dist/checksums/
+            exit 0
+          fi
+          
+          echo "Committing checksums to ${GITHUB_REPOSITORY}..."
+          
           # Copy checksums to repo
           cp dist/checksums/SHA256SUMS "checksums/v${version}.txt"
           
@@ -192,11 +202,19 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
+          # Safety gate: only publish from production repository
+          if [[ "${GITHUB_REPOSITORY}" != "midhunmonachan/codex-profiles" ]]; then
+            echo "Skipping crates.io publish: not production repository (current: ${GITHUB_REPOSITORY})"
+            exit 0
+          fi
+          
           if [ -z "${CARGO_REGISTRY_TOKEN}" ]; then
             echo "Warning: CARGO_REGISTRY_TOKEN not set, skipping crates.io publish"
             echo "Add your token at: https://github.com/${{ github.repository }}/settings/secrets/actions"
             exit 0
           fi
+          
+          echo "Publishing to crates.io from ${GITHUB_REPOSITORY}..."
           cargo publish --locked --token "${CARGO_REGISTRY_TOKEN}"
 
       - name: Publish to npm
@@ -204,11 +222,19 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
+          # Safety gate: only publish from production repository
+          if [[ "${GITHUB_REPOSITORY}" != "midhunmonachan/codex-profiles" ]]; then
+            echo "Skipping npm publish: not production repository (current: ${GITHUB_REPOSITORY})"
+            exit 0
+          fi
+          
           if [ -z "${NODE_AUTH_TOKEN}" ]; then
             echo "Warning: NPM_TOKEN not set, skipping npm publish"
             echo "Add your token at: https://github.com/${{ github.repository }}/settings/secrets/actions"
             exit 0
           fi
+          
+          echo "Publishing to npm from ${GITHUB_REPOSITORY}..."
           version="${GITHUB_REF_NAME#v}"
           echo "//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}" > ~/.npmrc
           
