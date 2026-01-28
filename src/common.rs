@@ -352,12 +352,6 @@ fn set_profile_permissions(path: &Path, perms: fs::Permissions) -> std::io::Resu
     fs::set_permissions(path, perms)
 }
 
-#[cfg(not(unix))]
-fn set_profile_permissions(_path: &Path, _perms: fs::Permissions) -> std::io::Result<()> {
-    // No-op on non-Unix platforms - permissions are handled differently
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

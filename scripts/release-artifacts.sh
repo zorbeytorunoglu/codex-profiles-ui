@@ -29,6 +29,13 @@ checksums_dir="${out_dir}/checksums"
 rm -rf "${release_dir}" "${npm_dir}" "${npm_packages_dir}" "${homebrew_dir}" "${cargo_dir}" "${checksums_dir}"
 mkdir -p "${release_dir}" "${npm_packages_dir}" "${homebrew_dir}" "${cargo_dir}" "${checksums_dir}"
 
+# Convert to absolute paths for use in subshells
+release_dir="$(cd "${release_dir}" && pwd)"
+npm_packages_dir="$(cd "${npm_packages_dir}" && pwd)"
+homebrew_dir="$(cd "${homebrew_dir}" && pwd)"
+cargo_dir="$(cd "${cargo_dir}" && pwd)"
+checksums_dir="$(cd "${checksums_dir}" && pwd)"
+
 sha256_file() {
   if command -v sha256sum >/dev/null 2>&1; then
     sha256sum "$1" | awk '{print $1}'
