@@ -3,10 +3,11 @@
 <p align="center">Manage multiple Codex CLI profiles and switch between them instantly.</p>
 
 <p align="center">
+  <img src="https://img.shields.io/github/actions/workflow/status/midhunmonachan/codex-profiles/tests.yml?branch=main&label=tests" alt="Tests" />
   <img src="https://img.shields.io/github/stars/midhunmonachan/codex-profiles" alt="Stars" />
   <img src="https://img.shields.io/github/v/release/midhunmonachan/codex-profiles" alt="Release" />
   <img src="https://img.shields.io/github/issues/midhunmonachan/codex-profiles" alt="Issues" />
-  <img src="https://img.shields.io/github/license/midhunmonachan/codex-profiles" alt="License" />
+  <img src="https://img.shields.io/github/license/midhunmonachan/codex-profiles?color=blue" alt="License" />
 </p>
 
 <p align="center">
