@@ -7,7 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.2.0] - Unreleased
+### Internal
+
+- Added `checksums/v0.2.0.txt` from release workflow output
+
+## [0.2.0] - 2026-02-21
 
 ### Added
 
@@ -16,11 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Profile deduplication now uses a composite identity key (email + plan) to prevent false duplicates
-- Update cache is preserved across profile lifecycle operations (save/load/delete)
-- Profile lifecycle flows were hardened to reduce partial-state edge cases during save/load/delete
-- Installer trap variable scoping bug that caused cleanup to fail on some shells
-- Hardened installer and release scripts for edge-case reliability
-- Release version bump helper now updates npm optional platform package versions and installer default version
+- Profile lifecycle operations now preserve update cache and handle save/load/delete edge cases more safely
+- Installer trap variable scoping bug that could break cleanup on some shells
+- Release bump flow now syncs npm optional package versions and installer default `VERSION` correctly
+- CI cache config updated to remove deprecated `rust-cache` parameters and invalid `save-if` usage
 
 ### Changed
 
@@ -34,13 +37,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Internal
 
+- Installer and release scripts hardened for edge-case reliability
 - CI: removed unused `sccache` from workflow jobs
-- CI: fixed deprecated `rust-cache` parameters and `save-if` syntax
+- Added repository checksum file for previous release (`checksums/v0.1.0.txt`)
 
 ### Documentation
 
 - README: reorganized badges, added a tests badge, and fixed license badge color
 - README: added Cargo installation instructions
+- CONTRIBUTING: documented release-tag bump behavior for npm optional packages and installer defaults
 
 ## [0.1.0] - 2026-01-28
 
