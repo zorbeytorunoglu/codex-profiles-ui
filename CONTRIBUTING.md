@@ -35,7 +35,7 @@ Feel free to open a PR directly.
 ## Setup
 
 - Rust toolchain: `rustup show`
-- Node (optional, for npm packaging later)
+- Node (for npm packaging)
 
 ## Checks
 
@@ -107,6 +107,9 @@ To bump and tag in one step:
 ```bash
 make release-tag ARGS="--bump patch"
 ```
+
+`--bump` also syncs npm `optionalDependencies` package versions and the default
+`VERSION` in `install.sh` so binary and installer release metadata stay aligned.
 
 ## Questions?
 
