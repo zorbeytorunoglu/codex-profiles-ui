@@ -230,9 +230,9 @@ pub fn list_profiles(paths: &Paths) -> Result<(), String> {
         return Ok(());
     }
 
-    let filtered: Vec<(String, u64)> = ordered
+    let filtered: Vec<String> = ordered
         .into_iter()
-        .filter(|(id, _)| current_saved_id.as_deref() != Some(id.as_str()))
+        .filter(|id| current_saved_id.as_deref() != Some(id.as_str()))
         .collect();
     let list_entries = make_entries(&filtered, &snapshot, None, &ctx);
 
@@ -292,21 +292,21 @@ fn status_all_profiles(paths: &Paths, show_errors: bool) -> Result<(), String> {
         &snapshot.tokens,
         &ctx,
     );
-    let filtered: Vec<(String, u64)> = ordered
+    let filtered: Vec<String> = ordered
         .into_iter()
-        .filter(|(id, _)| current_saved_id.as_deref() != Some(id.as_str()))
+        .filter(|id| current_saved_id.as_deref() != Some(id.as_str()))
         .collect();
 
     let mut hidden_api_count = 0usize;
     let mut hidden_error_count = 0usize;
     let mut list_entries = Vec::new();
     let labels_by_id = labels_by_id(&snapshot.labels);
-    for (id, ts) in filtered {
+    for id in filtered {
         if is_api_saved_profile(&id, &snapshot) {
             hidden_api_count += 1;
             continue;
         }
-        let entry = make_saved(&id, ts, &snapshot, &labels_by_id, None, &ctx);
+        let entry = make_saved(&id, &snapshot, &labels_by_id, None, &ctx);
         if !show_errors && entry.error_summary.is_some() {
             hidden_error_count += 1;
             continue;
@@ -972,7 +972,7 @@ fn load_snapshot_ordered(
     paths: &Paths,
     strict_labels: bool,
     no_profiles_message: &str,
-) -> Result<(Snapshot, Vec<(String, u64)>), String> {
+) -> Result<(Snapshot, Vec<String>), String> {
     let snapshot = load_snapshot(paths, strict_labels)?;
     let ordered = ordered_from_tokens(&snapshot.tokens);
     if ordered.is_empty() {
@@ -981,10 +981,8 @@ fn load_snapshot_ordered(
     Ok((snapshot, ordered))
 }
 
-fn ordered_from_tokens(
-    tokens_map: &BTreeMap<String, Result<Tokens, String>>,
-) -> Vec<(String, u64)> {
-    tokens_map.keys().cloned().map(|id| (id, 0)).collect()
+fn ordered_from_tokens(tokens_map: &BTreeMap<String, Result<Tokens, String>>) -> Vec<String> {
+    tokens_map.keys().cloned().collect()
 }
 
 fn copy_profile(source: &Path, dest: &Path, context: &str) -> Result<(), String> {
@@ -993,11 +991,7 @@ fn copy_profile(source: &Path, dest: &Path, context: &str) -> Result<(), String>
     Ok(())
 }
 
-fn make_candidates(
-    paths: &Paths,
-    snapshot: &Snapshot,
-    ordered: &[(String, u64)],
-) -> Vec<Candidate> {
+fn make_candidates(paths: &Paths, snapshot: &Snapshot, ordered: &[String]) -> Vec<Candidate> {
     let current_saved = current_saved_id(paths, &snapshot.tokens);
     build_candidates(ordered, snapshot, current_saved.as_deref())
 }
@@ -1122,14 +1116,14 @@ fn prompt_unsaved_load_with(
 }
 
 pub(crate) fn build_candidates(
-    ordered: &[(String, u64)],
+    ordered: &[String],
     snapshot: &Snapshot,
     current_saved_id: Option<&str>,
 ) -> Vec<Candidate> {
     let mut candidates = Vec::with_capacity(ordered.len());
     let use_color = use_color_stderr();
     let labels_by_id = labels_by_id(&snapshot.labels);
-    for (id, _ts) in ordered {
+    for id in ordered {
         let label = labels_by_id.get(id).cloned();
         let tokens = snapshot
             .tokens
@@ -1467,7 +1461,6 @@ fn make_entry(
 
 fn make_saved(
     id: &str,
-    _ts: u64,
     snapshot: &Snapshot,
     labels_by_id: &BTreeMap<String, String>,
     current_saved_id: Option<&str>,
@@ -1487,15 +1480,13 @@ fn make_saved(
 }
 
 fn make_entries(
-    ordered: &[(String, u64)],
+    ordered: &[String],
     snapshot: &Snapshot,
     current_saved_id: Option<&str>,
     ctx: &ListCtx,
 ) -> Vec<Entry> {
     let labels_by_id = labels_by_id(&snapshot.labels);
-    let build = |(id, ts): &(String, u64)| {
-        make_saved(id, *ts, snapshot, &labels_by_id, current_saved_id, ctx)
-    };
+    let build = |id: &String| make_saved(id, snapshot, &labels_by_id, current_saved_id, ctx);
     if ctx.show_usage && ordered.len() >= 3 {
         if ordered.len() > MAX_USAGE_CONCURRENCY {
             let mut entries = Vec::with_capacity(ordered.len());

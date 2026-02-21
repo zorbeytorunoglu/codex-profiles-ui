@@ -10,10 +10,24 @@ if [[ -z "${version}" ]]; then
   exit 1
 fi
 
+version="${version#v}"
+
+if [[ ! -d "${artifacts_dir}" ]]; then
+  echo "Missing artifacts dir: ${artifacts_dir}" >&2
+  exit 1
+fi
+
 rm -rf "${out_dir}"
 mkdir -p "${out_dir}"
 
-for artifact_dir in "${artifacts_dir}"/codex-profiles-*; do
+shopt -s nullglob
+artifact_dirs=("${artifacts_dir}"/codex-profiles-*)
+if [[ ${#artifact_dirs[@]} -eq 0 ]]; then
+  echo "No build artifacts found under ${artifacts_dir}" >&2
+  exit 1
+fi
+
+for artifact_dir in "${artifact_dirs[@]}"; do
   target="${artifact_dir##*/codex-profiles-}"
   pkg=""
   os=""
@@ -55,6 +69,10 @@ for artifact_dir in "${artifacts_dir}"/codex-profiles-*; do
 
   pkg_dir="${out_dir}/${pkg}"
   mkdir -p "${pkg_dir}/bin"
+  if [[ ! -f "${artifact_dir}/${bin_name}" ]]; then
+    echo "Missing binary for ${target}: ${artifact_dir}/${bin_name}" >&2
+    exit 1
+  fi
   cp "${artifact_dir}/${bin_name}" "${pkg_dir}/bin/${bin_name}"
   if [[ "${bin_name}" != *".exe" ]]; then
     chmod +x "${pkg_dir}/bin/${bin_name}"
@@ -72,3 +90,4 @@ for artifact_dir in "${artifacts_dir}"/codex-profiles-*; do
 }
 JSON
 done
+shopt -u nullglob

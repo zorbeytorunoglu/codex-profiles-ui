@@ -10,8 +10,10 @@ import json
 with open("package.json", "r", encoding="utf-8") as fh:
     print(json.load(fh)["version"])
 PY
-)
+  )
 fi
+
+version="${version#v}"
 
 release_dir="${out_dir}/release"
 npm_packages_dir="${out_dir}/npm-packages"

@@ -19,6 +19,17 @@ if [[ -z "${version}" ]]; then
   exit 1
 fi
 
+version="${version#v}"
+
+if [[ ! -d "${artifacts_dir}" ]]; then
+  echo "Missing artifacts dir: ${artifacts_dir}" >&2
+  exit 1
+fi
+
+mkdir -p "${out_dir}"
+artifacts_dir="$(cd "${artifacts_dir}" && pwd)"
+out_dir="$(cd "${out_dir}" && pwd)"
+
 release_dir="${out_dir}/release"
 npm_dir="${out_dir}/npm"
 npm_packages_dir="${out_dir}/npm-packages"
@@ -47,7 +58,14 @@ sha256_file() {
   fi
 }
 
-for artifact_dir in "${artifacts_dir}"/codex-profiles-*; do
+shopt -s nullglob
+artifact_dirs=("${artifacts_dir}"/codex-profiles-*)
+if [[ ${#artifact_dirs[@]} -eq 0 ]]; then
+  echo "No build artifacts found under ${artifacts_dir}" >&2
+  exit 1
+fi
+
+for artifact_dir in "${artifact_dirs[@]}"; do
   target="${artifact_dir##*/codex-profiles-}"
   binary="codex-profiles"
   if [[ "${target}" == *windows* ]]; then
@@ -62,7 +80,12 @@ for artifact_dir in "${artifacts_dir}"/codex-profiles-*; do
 done
 
 scripts/package-npm.sh "${version}" "${artifacts_dir}" "${npm_dir}"
-for pkg_dir in "${npm_dir}"/*; do
+package_dirs=("${npm_dir}"/*)
+if [[ ${#package_dirs[@]} -eq 0 ]]; then
+  echo "No npm package directories generated under ${npm_dir}" >&2
+  exit 1
+fi
+for pkg_dir in "${package_dirs[@]}"; do
   npm pack "${pkg_dir}" --pack-destination "${npm_packages_dir}"
 done
 npm pack --pack-destination "${npm_packages_dir}"

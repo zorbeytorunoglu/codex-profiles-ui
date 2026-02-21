@@ -16,6 +16,10 @@ bump=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --bump)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --bump (use patch|minor|major)" >&2
+        exit 1
+      fi
       bump="${2:-}"
       shift 2
       ;;

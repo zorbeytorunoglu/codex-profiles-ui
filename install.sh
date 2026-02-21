@@ -27,7 +27,7 @@ warn() {
 }
 
 error() {
-    printf "${RED}error:${RESET} %s\n" "$*" >&2
+    printf "${RED}error:${RESET} %b\n" "$*" >&2
     exit 1
 }
 
@@ -97,7 +97,11 @@ verify_checksum() {
     basename="$(basename "$file")"
     local expected actual
     
-    expected="$(awk -v needle="release/$basename" '$2 ~ needle {print $1; exit}' "$checksum_file")"
+    expected="$(
+        awk -v name="$basename" '
+            $2 ~ ("(^|/)release/" name "$") { print $1; exit }
+        ' "$checksum_file"
+    )"
     if [ -z "$expected" ]; then
         error "checksum not found for $basename in checksum file"
     fi
@@ -128,7 +132,6 @@ main() {
     need_cmd uname
     need_cmd mkdir
     need_cmd chmod
-    need_cmd tar
     
     info "Installing codex-profiles v$VERSION"
     
@@ -138,6 +141,14 @@ main() {
     
     local base_url="https://github.com/$REPO/releases/download/v$VERSION"
     local archive_name="codex-profiles-${target}.tar.gz"
+    local is_windows=0
+    if [[ "$target" == *"windows"* ]]; then
+        archive_name="codex-profiles-${target}.exe.zip"
+        is_windows=1
+        need_cmd unzip
+    else
+        need_cmd tar
+    fi
     local archive_url="$base_url/$archive_name"
     
     local checksum_url="https://raw.githubusercontent.com/$REPO/main/checksums/v${VERSION}.txt"
@@ -165,7 +176,11 @@ main() {
     fi
     
     info "Extracting..."
-    tar -xzf "$archive_path" -C "$tmpdir" || error "extraction failed"
+    if [[ "${is_windows}" -eq 1 ]]; then
+        unzip -q "$archive_path" -d "$tmpdir" || error "extraction failed"
+    else
+        tar -xzf "$archive_path" -C "$tmpdir" || error "extraction failed"
+    fi
     
     # Determine binary name based on OS
     local binary_name="codex-profiles"
@@ -208,7 +223,8 @@ main() {
         error "installation failed: binary is not executable"
     fi
     
-    if ! echo "$PATH" | grep -q "$INSTALL_DIR"; then
+    local install_dir_no_trailing="${INSTALL_DIR%/}"
+    if [[ ":$PATH:" != *":${install_dir_no_trailing}:"* ]]; then
         warn "$INSTALL_DIR is not in your PATH"
         if [[ "$target" == *"windows"* ]]; then
             warn "Add this directory to your PATH environment variable"
@@ -254,10 +270,16 @@ EOF
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -v|--version)
+            if [[ $# -lt 2 ]]; then
+                error "missing value for $1"
+            fi
             VERSION="${2#v}"
             shift 2
             ;;
         -d|--dir)
+            if [[ $# -lt 2 ]]; then
+                error "missing value for $1"
+            fi
             INSTALL_DIR="$2"
             shift 2
             ;;
