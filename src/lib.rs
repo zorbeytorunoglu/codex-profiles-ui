@@ -53,8 +53,6 @@ fn run(cli: Cli) -> Result<(), String> {
     let paths = resolve_paths()?;
     ensure_paths(&paths)?;
 
-    ensure_codex_cli(detect_install_source())?;
-
     let check_for_update_on_startup = std::env::var_os("CODEX_PROFILES_SKIP_UPDATE").is_none();
     let update_config = UpdateConfig {
         codex_home: paths.codex.clone(),
@@ -71,20 +69,7 @@ fn run(cli: Cli) -> Result<(), String> {
         Commands::Save { label } => save_profile(&paths, label),
         Commands::Load { label } => load_profile(&paths, label),
         Commands::List => list_profiles(&paths),
-        Commands::Status {
-            all,
-            show_errors,
-            label,
-        } => {
-            if label.is_some() && all {
-                return Err(crate::CMD_ERR_LABEL_WITH_ALL.to_string());
-            }
-            if let Some(label) = label {
-                status_label(&paths, &label)
-            } else {
-                status_profiles(&paths, all, show_errors)
-            }
-        }
+        Commands::Status { all, show_errors } => status_profiles(&paths, all, show_errors),
         Commands::Delete { yes, label } => delete_profile(&paths, yes, label),
     }
 }
@@ -109,21 +94,26 @@ mod cli;
 mod common;
 mod messages;
 mod profiles;
-mod requirements;
 #[cfg(test)]
 mod test_utils;
 mod ui;
 mod updates;
 mod usage;
 
-pub use auth::*;
-pub use common::*;
-pub use messages::*;
-pub use profiles::*;
-pub use requirements::*;
-pub use ui::*;
-pub use updates::*;
-pub use usage::*;
+pub(crate) use auth::*;
+pub(crate) use common::*;
+pub(crate) use messages::*;
+pub(crate) use profiles::*;
+pub(crate) use ui::*;
+pub(crate) use updates::*;
+pub(crate) use usage::*;
+
+pub use auth::{AuthFile, Tokens, extract_email_and_plan};
+pub use updates::{
+    InstallSource, detect_install_source_inner, extract_version_from_cask,
+    extract_version_from_latest_tag, is_newer,
+};
+pub use usage::parse_config_value;
 
 #[cfg(test)]
 mod tests {

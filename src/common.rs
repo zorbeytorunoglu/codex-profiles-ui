@@ -25,6 +25,7 @@ pub struct Paths {
     pub auth: PathBuf,
     pub profiles: PathBuf,
     pub profiles_index: PathBuf,
+    pub update_cache: PathBuf,
     pub profiles_lock: PathBuf,
 }
 
@@ -97,12 +98,14 @@ pub fn resolve_paths() -> Result<Paths, String> {
     let auth = codex_dir.join("auth.json");
     let profiles = codex_dir.join("profiles");
     let profiles_index = profiles.join("profiles.json");
+    let update_cache = profiles.join("update.json");
     let profiles_lock = profiles.join("profiles.lock");
     Ok(Paths {
         codex: codex_dir,
         auth,
         profiles,
         profiles_index,
+        update_cache,
         profiles_lock,
     })
 }
@@ -192,6 +195,7 @@ pub fn ensure_paths(paths: &Paths) -> Result<(), String> {
     }
 
     ensure_file_or_absent(&paths.profiles_index)?;
+    ensure_file_or_absent(&paths.update_cache)?;
     ensure_file_or_absent(&paths.profiles_lock)?;
 
     OpenOptions::new()
@@ -214,6 +218,7 @@ pub fn write_atomic(path: &Path, contents: &[u8]) -> Result<(), String> {
     write_atomic_with_permissions(path, contents, permissions)
 }
 
+#[cfg(test)]
 pub fn write_atomic_with_mode(path: &Path, contents: &[u8], mode: u32) -> Result<(), String> {
     #[cfg(unix)]
     {

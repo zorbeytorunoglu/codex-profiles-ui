@@ -445,7 +445,7 @@ fn ui_save_trims_label() {
 }
 
 #[test]
-fn ui_save_skips_rename_without_usage_signal() {
+fn ui_save_renames_primary_candidate_to_canonical_id() {
     let env = TestEnv::new();
     seed_alpha(&env);
     fs::create_dir_all(env.profiles_dir()).expect("create profiles dir");
@@ -458,7 +458,9 @@ fn ui_save_skips_rename_without_usage_signal() {
     seed_alpha_with_token(&env, "token-alpha-new");
     env.run(&["save"]);
     assert!(profile_one.is_file());
-    assert!(profile_two.is_file());
+    assert!(!profile_two.is_file());
+    let canonical = env.profiles_dir().join(format!("{ALPHA_ID}.json"));
+    assert!(canonical.is_file());
 }
 
 #[test]
@@ -561,6 +563,16 @@ fn ui_delete_no_profiles() {
 }
 
 #[test]
+fn ui_delete_reports_snapshot_errors() {
+    let env = TestEnv::new();
+    fs::create_dir_all(env.profiles_dir()).expect("create profiles dir");
+    fs::write(env.profiles_dir().join("profiles.json"), "{").expect("write invalid index");
+    let err = env.run_expect_error(&["delete", "--yes"]);
+    assert!(err.contains("Profiles index file"));
+    assert!(err.contains("invalid JSON"));
+}
+
+#[test]
 fn ui_list_command() {
     let env = TestEnv::new();
     seed_profiles(&env);
@@ -589,6 +601,19 @@ fn ui_list_free_plan() {
     assert!(output.contains(FREE_EMAIL));
     assert!(!output.contains("You need a ChatGPT subscription to use Codex CLI"));
     assert!(!output.contains("Data not available"));
+}
+
+#[test]
+fn ui_list_unsaved_free_profile_shows_warning() {
+    let env = TestEnv::new();
+    seed_alpha(&env);
+    env.run(&["save", "--label", "alpha"]);
+    seed_free(&env);
+
+    let output = env.run(&["list"]);
+    assert!(output.contains(FREE_EMAIL));
+    assert!(output.contains("Warning: This profile is not saved yet."));
+    assert!(output.contains("Run `codex-profiles save` to save this profile."));
 }
 
 #[test]
@@ -655,14 +680,12 @@ fn ui_status_command() {
 }
 
 #[test]
-fn ui_status_label_command() {
+fn ui_status_rejects_label_flag() {
     let env = TestEnv::new();
     seed_profiles(&env);
     seed_alpha(&env);
-    assert_status_output(&env, &["status", "--label", "beta"], &["beta@example.com"]);
-    let output = env.run(&["status", "--label", "beta"]);
-    assert!(output.contains("beta@example.com"));
-    assert!(!output.contains("alpha@example.com"));
+    let err = env.run_expect_error(&["status", "--label", "beta"]);
+    assert!(err.contains("unexpected argument '--label'"));
 }
 
 #[test]
@@ -682,6 +705,24 @@ fn ui_status_all_command() {
     );
     let output = env.run(&["status", "--all", "--show-errors"]);
     assert_order(&output, "alpha@example.com", "beta@example.com");
+}
+
+#[test]
+fn ui_status_all_unsaved_free_profile_shows_warning() {
+    let env = TestEnv::new();
+    seed_alpha(&env);
+    env.run(&["save", "--label", "alpha"]);
+    seed_free(&env);
+
+    let usage_body = r#"{"rate_limit":{"primary_window":{"used_percent":20,"limit_window_seconds":18000,"reset_at":2000000000}}}"#;
+    let (usage_addr, usage_handle) = start_usage_server(usage_body, 6).expect("usage server");
+    env.write_config(&format!("http://{usage_addr}/backend-api"));
+
+    let output = env.run(&["status", "--all"]);
+    assert!(output.contains(FREE_EMAIL));
+    assert!(output.contains("Warning: This profile is not saved yet."));
+    assert!(output.contains("Run `codex-profiles save` to save this profile."));
+    let _ = usage_handle.join();
 }
 
 #[test]
@@ -915,22 +956,15 @@ fn ui_status_all_uses_usage_path_when_id_token_missing() {
 #[test]
 fn ui_status_api_key_error_message_is_standardized() {
     let env = TestEnv::new();
-    let profile_id = "api-key-profile";
-    write_profile_tokens(
+    write_auth_tokens(
         &env,
-        profile_id,
         serde_json::json!({
             "account_id": "api-key-sk-proj-abcdef1234567890",
             "refresh_token": ""
         }),
     );
-    env.write_profiles_index(
-        &[(profile_id, 10)],
-        &[(profile_id, "key")],
-        Some(profile_id),
-    );
 
-    let output = env.run(&["status", "--label", "key"]);
+    let output = env.run(&["status"]);
     assert!(output.contains("Error: Usage unavailable for API key"));
     assert!(
         output.contains("Rate-limit usage data is only available for ChatGPT account profiles.")

@@ -101,14 +101,14 @@ rm ~/.local/bin/codex-profiles
 ## Usage
 
 > [!TIP]
-> Commands are interactive unless you pass `--label`.
+> `load` and `delete` are interactive unless you pass `--label`.
 
 | Command | Description |
 | --- | --- |
 | `codex-profiles save [--label <name>]` | Save the current `auth.json` as a profile, optionally labeled. |
 | `codex-profiles load [--label <name>]` | Load a profile from the picker without re-login (or by label). |
 | `codex-profiles list` | List saved profiles. |
-| `codex-profiles status [--all] [--label <name>]` | Show usage for the current profile, all profiles, or a specific label. |
+| `codex-profiles status [--all] [--show-errors]` | Show usage for the current profile, or all saved profiles (`--all`). |
 | `codex-profiles delete [--yes] [--label <name>]` | Delete profiles from the picker (or by label). |
 
 > [!WARNING]
@@ -130,7 +130,8 @@ Loaded profile mail@company.com (Team)
 > | File | Purpose |
 > | --- | --- |
 > | `{email-plan}.json` | Saved profiles. |
-> | `profiles.json` | Profile metadata (labels, last-used, active). |
+> | `profiles.json` | Profile metadata (labels and identity fields for saved profiles). |
+> | `update.json` | Cached updater state (latest checked version metadata). |
 > | `profiles.lock` | Lock file for safe updates. |
 
 ## FAQ

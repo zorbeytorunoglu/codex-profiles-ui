@@ -38,10 +38,6 @@ pub enum Commands {
         /// Include errored profiles in --all output
         #[arg(long, requires = "all")]
         show_errors: bool,
-        /// Show usage for the profile matching this label
-        #[arg(value_name = "label")]
-        #[arg(long)]
-        label: Option<String>,
     },
     /// Delete saved profiles from the interactive list
     Delete {

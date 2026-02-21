@@ -1,11 +1,12 @@
 use chrono::{DateTime, Duration, Utc};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use std::fs;
 use std::io::IsTerminal as _;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::time::Duration as StdDuration;
 
-use crate::{Paths, UpdateCache, lock_usage, read_profiles_index, write_profiles_index};
+use crate::{Paths, lock_usage, read_profiles_index, write_atomic, write_profiles_index};
 use crate::{
     UPDATE_ERR_PERSIST_DISMISSAL, UPDATE_ERR_READ_CHOICE, UPDATE_ERR_REFRESH_VERSION,
     UPDATE_ERR_SHOW_PROMPT, UPDATE_NON_TTY_RUN, UPDATE_OPTION_NOW, UPDATE_OPTION_SKIP,
@@ -121,6 +122,22 @@ pub struct UpdateConfig {
 #[derive(Deserialize, Debug, Clone)]
 struct ReleaseInfo {
     tag_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct UpdateCache {
+    #[serde(default)]
+    latest_version: String,
+    #[serde(default = "update_cache_checked_default")]
+    last_checked_at: DateTime<Utc>,
+    #[serde(default)]
+    dismissed_version: Option<String>,
+    #[serde(default)]
+    last_prompted_at: Option<DateTime<Utc>>,
+}
+
+fn update_cache_checked_default() -> DateTime<Utc> {
+    DateTime::<Utc>::from_timestamp(0, 0).unwrap_or_else(Utc::now)
 }
 
 pub enum UpdatePromptOutcome {
@@ -264,10 +281,6 @@ fn build_update_cache(
     }
 }
 
-pub fn get_upgrade_version(config: &UpdateConfig) -> Option<String> {
-    get_upgrade_version_with_debug(config, cfg!(debug_assertions))
-}
-
 fn get_upgrade_version_with_debug(config: &UpdateConfig, is_debug: bool) -> Option<String> {
     if updates_disabled_with_debug(config, is_debug) {
         return None;
@@ -321,19 +334,13 @@ fn check_for_update_with_action(
     };
 
     // Preserve any previously dismissed version if present.
-    let _lock = lock_usage(paths).map_err(|err| anyhow::anyhow!(err))?;
-    let mut index = match read_profiles_index(paths) {
-        Ok(index) => index,
-        Err(_) => return Ok(()),
-    };
-    let prev_info = index.update_cache.clone();
+    let prev_info = read_update_cache(paths).ok().flatten();
     let prev_dismissed = prev_info
         .as_ref()
         .and_then(|info| info.dismissed_version.clone());
     let prev_prompted = prev_info.as_ref().and_then(|info| info.last_prompted_at);
     let info = build_update_cache(latest_version, prev_dismissed, prev_prompted);
-    index.update_cache = Some(info);
-    write_profiles_index(paths, &index).map_err(|err| anyhow::anyhow!(err))
+    write_update_cache(paths, &info)
 }
 
 #[doc(hidden)]
@@ -399,12 +406,6 @@ fn fetch_version_from_release() -> Option<String> {
         Err(ureq::Error::StatusCode(404)) => None,
         Err(_) => None,
     }
-}
-
-/// Returns the latest version to show in a popup, if it should be shown.
-/// This respects the user's dismissal choice for the current latest version.
-pub fn get_upgrade_version_for_popup(config: &UpdateConfig) -> Option<String> {
-    get_upgrade_version_for_popup_with_debug(config, cfg!(debug_assertions))
 }
 
 fn get_upgrade_version_for_popup_with_debug(
@@ -477,6 +478,7 @@ fn paths_for_update(codex_home: PathBuf) -> Paths {
     Paths {
         auth: codex_home.join("auth.json"),
         profiles_index: profiles.join("profiles.json"),
+        update_cache: profiles.join("update.json"),
         profiles_lock: profiles.join("profiles.lock"),
         codex: codex_home,
         profiles,
@@ -488,15 +490,42 @@ fn update_paths(config: &UpdateConfig) -> Paths {
 }
 
 fn read_update_cache(paths: &Paths) -> anyhow::Result<Option<UpdateCache>> {
-    let index = read_profiles_index(paths).map_err(|err| anyhow::anyhow!(err))?;
-    Ok(index.update_cache)
+    if !paths.update_cache.is_file() {
+        if let Some(legacy) = read_legacy_update_cache(paths)? {
+            let _ = write_update_cache(paths, &legacy);
+            return Ok(Some(legacy));
+        }
+        return Ok(None);
+    }
+    let contents = fs::read_to_string(&paths.update_cache)?;
+    if contents.trim().is_empty() {
+        return Ok(None);
+    }
+    let cache = serde_json::from_str::<UpdateCache>(&contents)?;
+    Ok(Some(cache))
 }
 
 fn write_update_cache(paths: &Paths, cache: &UpdateCache) -> anyhow::Result<()> {
     let _lock = lock_usage(paths).map_err(|err| anyhow::anyhow!(err))?;
-    let mut index = read_profiles_index(paths).map_err(|err| anyhow::anyhow!(err))?;
-    index.update_cache = Some(cache.clone());
-    write_profiles_index(paths, &index).map_err(|err| anyhow::anyhow!(err))
+    let contents = serde_json::to_string_pretty(cache)?;
+    write_atomic(&paths.update_cache, format!("{contents}\n").as_bytes())
+        .map_err(|err| anyhow::anyhow!(err))
+}
+
+fn read_legacy_update_cache(paths: &Paths) -> anyhow::Result<Option<UpdateCache>> {
+    if !paths.profiles_index.is_file() {
+        return Ok(None);
+    }
+    let contents = fs::read_to_string(&paths.profiles_index)?;
+    let json: serde_json::Value = serde_json::from_str(&contents)?;
+    let Some(value) = json.get("update_cache") else {
+        return Ok(None);
+    };
+    let cache = serde_json::from_value::<UpdateCache>(value.clone())?;
+    if let Ok(index) = read_profiles_index(paths) {
+        let _ = write_profiles_index(paths, &index);
+    }
+    Ok(Some(cache))
 }
 
 fn update_agent() -> ureq::Agent {
@@ -639,8 +668,35 @@ mod tests {
         fs::create_dir_all(&paths.profiles).unwrap();
         fs::write(&paths.profiles_lock, "").unwrap();
         check_for_update_with_action(&paths, None).unwrap();
-        let contents = fs::read_to_string(&paths.profiles_index).unwrap();
+        let contents = fs::read_to_string(&paths.update_cache).unwrap();
         assert!(contents.contains("9.9.9"));
+    }
+
+    #[test]
+    fn read_update_cache_migrates_legacy_profiles_schema() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = paths_for_update(dir.path().to_path_buf());
+        fs::create_dir_all(&paths.profiles).unwrap();
+        fs::write(&paths.profiles_lock, "").unwrap();
+        let legacy = serde_json::json!({
+            "version": 1,
+            "profiles": {},
+            "update_cache": {
+                "latest_version": "1.2.3",
+                "last_checked_at": "2024-01-01T00:00:00Z"
+            }
+        });
+        fs::write(
+            &paths.profiles_index,
+            serde_json::to_string_pretty(&legacy).unwrap(),
+        )
+        .unwrap();
+
+        let migrated = read_update_cache(&paths).unwrap().unwrap();
+        assert_eq!(migrated.latest_version, "1.2.3");
+        assert!(paths.update_cache.is_file());
+        let index_contents = fs::read_to_string(&paths.profiles_index).unwrap();
+        assert!(!index_contents.contains("update_cache"));
     }
 
     #[test]

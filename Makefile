@@ -1,7 +1,20 @@
-.PHONY: coverage check precommit hooks release-tag release-prep clean-artifacts verify-artifacts print-release-notes
+.PHONY: coverage fmt clippy test check precommit hooks release-tag release-prep env-check clean-artifacts verify-artifacts print-release-notes
 
 coverage:
 	cargo llvm-cov --workspace --all-features --fail-under-lines 100 --ignore-filename-regex "tests/|target/"
+
+fmt:
+	cargo fmt --all
+
+clippy:
+	cargo clippy --all-targets --locked -- -D warnings
+
+test:
+	@if command -v cargo-nextest >/dev/null 2>&1; then \
+		cargo nextest run --tests --locked; \
+	else \
+		cargo test --tests --locked; \
+	fi
 
 check:
 	@./scripts/check.sh

@@ -133,12 +133,14 @@ pub(crate) fn make_paths(root: &Path) -> Paths {
     let auth = codex.join("auth.json");
     let profiles = codex.join("profiles");
     let profiles_index = profiles.join("profiles.json");
+    let update_cache = profiles.join("update.json");
     let profiles_lock = profiles.join("profiles.lock");
     Paths {
         codex,
         auth,
         profiles,
         profiles_index,
+        update_cache,
         profiles_lock,
     }
 }

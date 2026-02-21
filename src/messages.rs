@@ -2,15 +2,6 @@ pub const CANCELLED_MESSAGE: &str = "Cancelled.";
 
 pub const AUTH_REFRESH_401_TITLE: &str = "Token refresh unauthorized (401)";
 
-pub const AUTH_REFRESH_401_EXPIRED_DETAIL: &str =
-    "Refresh token expired. Authenticate again with `codex login`, then save this profile.";
-pub const AUTH_REFRESH_401_REUSED_DETAIL: &str =
-    "Authenticate again with `codex login`, then save this profile.";
-pub const AUTH_REFRESH_401_REVOKED_DETAIL: &str =
-    "Refresh token revoked. Authenticate again with `codex login`, then save this profile.";
-pub const AUTH_REFRESH_401_UNKNOWN_DETAIL: &str =
-    "Authenticate again with `codex login`, then save this profile.";
-
 pub const AUTH_RELOGIN_AND_SAVE: &str =
     "Authenticate again with `codex login`, then save this profile";
 
@@ -63,7 +54,6 @@ pub const USAGE_ERR_REQUEST_FAILED_CODE: &str = "Error: Usage request failed. ({
 pub const USAGE_ERR_SERVICE_UNREACHABLE: &str = "Error: Could not reach usage service: {}";
 pub const USAGE_ERR_INVALID_RESPONSE: &str = "Error: Invalid usage response: {}";
 pub const USAGE_UNAVAILABLE_DEFAULT: &str = "Data not available";
-pub const USAGE_SPINNER_LOADING_PROFILE: &str = "Loading profile";
 pub const USAGE_ERR_LOCK_OPEN: &str = "Error: Could not open profiles lock: {}";
 pub const USAGE_ERR_LOCK_ACQUIRE: &str =
     "Error: Could not acquire profiles lock. Ensure no other {} is running and retry.";
@@ -91,7 +81,6 @@ pub const PROFILE_ERR_SYNC_CURRENT: &str = "Error: Failed to sync current profil
 pub const PROFILE_ERR_COPY_CONTEXT: &str = "Error: Failed to {} {}: {}";
 pub const PROFILE_COPY_CONTEXT_SAVE: &str = "save profile to";
 pub const PROFILE_COPY_CONTEXT_LOAD: &str = "load selected profile to";
-pub const PROFILE_COPY_CONTEXT_SYNC: &str = "sync current profile";
 pub const PROFILE_ERR_CURRENT_NOT_SAVED: &str = "Error: Current profile is not saved. {}";
 pub const PROFILE_WARN_CURRENT_NOT_SAVED_REASON: &str = "Current profile is not saved ({})";
 pub const PROFILE_ERR_PROMPT_LOAD: &str = "Error: Could not prompt for load: {}";
@@ -114,11 +103,7 @@ pub const PROFILE_STATUS_ERROR_HIDDEN: &str = "+ {} errored profiles hidden (use
 pub const PROFILE_SUMMARY_ERROR: &str = "Error";
 pub const PROFILE_SUMMARY_AUTH_ERROR: &str = "Auth error";
 pub const PROFILE_SUMMARY_USAGE_ERROR: &str = "Usage error";
-pub const PROFILE_SUMMARY_AUTH_REFRESH: &str = "Auth refresh";
 pub const PROFILE_SUMMARY_FILE_MISSING: &str = "profile file missing";
-
-pub const PROFILE_SPINNER_LOADING_PROFILES: &str = "Loading profiles";
-pub const PROFILE_SPINNER_LOADING_PROFILE: &str = "Loading profile";
 
 pub const PROFILE_PROMPT_SAVE_AND_CONTINUE: &str = "Save current profile and continue";
 pub const PROFILE_PROMPT_CONTINUE_WITHOUT_SAVING: &str = "Continue without saving";
@@ -146,11 +131,8 @@ pub const UI_ERROR_PREFIX: &str = "Error:";
 pub const UI_ERROR_TWO_LINE: &str = "Error: {}\n{}";
 pub const UI_UNKNOWN_PROFILE: &str = "Unknown profile{}";
 
-pub const CMD_ERR_LABEL_WITH_ALL: &str = "Error: --label cannot be combined with --all.";
 pub const CMD_ERR_UPDATE_RUN: &str = "Error: Could not run update command: {}";
 pub const CMD_ERR_UPDATE_FAILED: &str = "Error: Update command failed: {}";
-
-pub const REQUIREMENTS_ERR_CODEX_MISSING: &str = "Error: Codex CLI not found. Install it with {}.";
 
 pub const COMMON_ERR_RESOLVE_HOME: &str = "Error: Could not resolve home directory";
 pub const COMMON_ERR_EXISTS_NOT_DIR: &str = "Error: {} exists and is not a directory";

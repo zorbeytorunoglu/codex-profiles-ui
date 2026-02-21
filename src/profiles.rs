@@ -1,4 +1,4 @@
-use chrono::{DateTime, Local, Utc};
+use chrono::{DateTime, Local};
 use colored::Colorize;
 use inquire::{Confirm, MultiSelect, Select};
 use rayon::prelude::*;
@@ -23,8 +23,7 @@ use crate::{
     PROFILE_MSG_DELETED_WITH, PROFILE_MSG_LOADED_WITH, PROFILE_MSG_NOT_FOUND,
     PROFILE_MSG_REMOVED_INVALID, PROFILE_MSG_SAVED, PROFILE_MSG_SAVED_WITH, PROFILE_PROMPT_CANCEL,
     PROFILE_PROMPT_CONTINUE_WITHOUT_SAVING, PROFILE_PROMPT_DELETE_MANY, PROFILE_PROMPT_DELETE_ONE,
-    PROFILE_PROMPT_DELETE_SELECTED, PROFILE_PROMPT_SAVE_AND_CONTINUE,
-    PROFILE_SPINNER_LOADING_PROFILE, PROFILE_SPINNER_LOADING_PROFILES, PROFILE_STATUS_API_HIDDEN,
+    PROFILE_PROMPT_DELETE_SELECTED, PROFILE_PROMPT_SAVE_AND_CONTINUE, PROFILE_STATUS_API_HIDDEN,
     PROFILE_STATUS_ERROR_HIDDEN, PROFILE_SUMMARY_AUTH_ERROR, PROFILE_SUMMARY_ERROR,
     PROFILE_SUMMARY_FILE_MISSING, PROFILE_SUMMARY_USAGE_ERROR, PROFILE_UNSAVED_NO_MATCH,
     PROFILE_WARN_CURRENT_NOT_SAVED_REASON, UI_ERROR_PREFIX, UI_ERROR_TWO_LINE,
@@ -45,8 +44,8 @@ use crate::{
     read_tokens_opt, refresh_profile_tokens, require_identity, token_account_id,
 };
 use crate::{
-    UsageLock, fetch_usage_details, format_usage_unavailable, lock_usage, now_seconds,
-    ordered_profiles, read_base_url, start_usage_spinner, stop_usage_spinner, usage_unavailable,
+    UsageLock, fetch_usage_details, format_usage_unavailable, lock_usage, read_base_url,
+    usage_unavailable,
 };
 
 const MAX_USAGE_CONCURRENCY: usize = 4;
@@ -55,13 +54,7 @@ pub fn save_profile(paths: &Paths, label: Option<String>) -> Result<(), String> 
     let use_color = use_color_stdout();
     let mut store = ProfileStore::load(paths)?;
     let tokens = read_tokens(&paths.auth)?;
-    let id = resolve_save_id(
-        paths,
-        &mut store.usage_map,
-        &mut store.labels,
-        &mut store.profiles_index,
-        &tokens,
-    )?;
+    let id = resolve_save_id(paths, &mut store.profiles_index, &tokens)?;
 
     if let Some(label) = label.as_deref() {
         assign_label(&mut store.labels, label, &id)?;
@@ -70,15 +63,12 @@ pub fn save_profile(paths: &Paths, label: Option<String>) -> Result<(), String> 
     let target = profile_path_for_id(&paths.profiles, &id);
     copy_profile(&paths.auth, &target, PROFILE_COPY_CONTEXT_SAVE)?;
 
-    let now = now_seconds();
-    store.usage_map.insert(id.clone(), now);
     let label_display = label_for_id(&store.labels, &id);
     update_profiles_index_entry(
         &mut store.profiles_index,
         &id,
         Some(&tokens),
         label_display.clone(),
-        now,
     );
     store.save(paths)?;
 
@@ -135,12 +125,7 @@ pub fn load_profile(paths: &Paths, label: Option<String>) -> Result<(), String> 
 
     let mut store = ProfileStore::load(paths)?;
 
-    if let Err(err) = sync_current(
-        paths,
-        &mut store.usage_map,
-        &mut store.labels,
-        &mut store.profiles_index,
-    ) {
+    if let Err(err) = sync_current(paths, &mut store.profiles_index) {
         let warning = format_warning(&err, use_color_err);
         eprintln!("{warning}");
     }
@@ -152,14 +137,12 @@ pub fn load_profile(paths: &Paths, label: Option<String>) -> Result<(), String> 
 
     copy_profile(&source, &paths.auth, PROFILE_COPY_CONTEXT_LOAD)?;
 
-    let now = now_seconds();
-    store.usage_map.insert(selected_id.clone(), now);
     let label = label_for_id(&store.labels, &selected_id);
     let tokens = snapshot
         .tokens
         .get(&selected_id)
         .and_then(|result| result.as_ref().ok());
-    update_profiles_index_entry(&mut store.profiles_index, &selected_id, tokens, label, now);
+    update_profiles_index_entry(&mut store.profiles_index, &selected_id, tokens, label);
     store.save(paths)?;
 
     let message = format_action(
@@ -177,8 +160,11 @@ pub fn delete_profile(paths: &Paths, yes: bool, label: Option<String>) -> Result
     let (snapshot, ordered) = match load_snapshot_ordered(paths, true, &no_profiles) {
         Ok(result) => result,
         Err(message) => {
-            print_output_block(&message);
-            return Ok(());
+            if message == no_profiles {
+                print_output_block(&message);
+                return Ok(());
+            }
+            return Err(message);
         }
     };
 
@@ -204,7 +190,6 @@ pub fn delete_profile(paths: &Paths, yes: bool, label: Option<String>) -> Result
             return Err(profile_not_found(use_color_err));
         }
         fs::remove_file(&target).map_err(|err| crate::msg1(PROFILE_ERR_FAILED_DELETE, err))?;
-        store.usage_map.remove(selected);
         remove_labels_for_id(&mut store.labels, selected);
         store.profiles_index.profiles.remove(selected);
     }
@@ -222,17 +207,15 @@ pub fn delete_profile(paths: &Paths, yes: bool, label: Option<String>) -> Result
 
 pub fn list_profiles(paths: &Paths) -> Result<(), String> {
     let snapshot = load_snapshot(paths, false)?;
-    let usage_map = &snapshot.usage_map;
-    let current_saved_id = current_saved_id(paths, usage_map, &snapshot.tokens);
+    let current_saved_id = current_saved_id(paths, &snapshot.tokens);
     let ctx = ListCtx::new(paths, false);
 
-    let ordered = ordered_profiles(usage_map);
+    let ordered = ordered_from_tokens(&snapshot.tokens);
     let current_entry = make_current(
         paths,
         current_saved_id.as_deref(),
         &snapshot.labels,
         &snapshot.tokens,
-        &snapshot.usage_map,
         &ctx,
     );
     let has_saved = !ordered.is_empty();
@@ -273,34 +256,19 @@ pub fn status_profiles(paths: &Paths, all: bool, show_errors: bool) -> Result<()
     let snapshot = load_snapshot(paths, false).ok();
     let current_saved_id = snapshot
         .as_ref()
-        .and_then(|snap| current_saved_id(paths, &snap.usage_map, &snap.tokens));
-    let mut ctx = ListCtx::new(paths, true);
-    let spinner = start_usage_spinner(PROFILE_SPINNER_LOADING_PROFILE);
-    ctx.show_spinner = false;
+        .and_then(|snap| current_saved_id(paths, &snap.tokens));
+    let ctx = ListCtx::new(paths, true);
     let empty_labels = Labels::new();
     let labels = snapshot
         .as_ref()
         .map(|snap| &snap.labels)
         .unwrap_or(&empty_labels);
     let empty_tokens = BTreeMap::new();
-    let empty_usage = BTreeMap::new();
     let tokens_map = snapshot
         .as_ref()
         .map(|snap| &snap.tokens)
         .unwrap_or(&empty_tokens);
-    let usage_map = snapshot
-        .as_ref()
-        .map(|snap| &snap.usage_map)
-        .unwrap_or(&empty_usage);
-    let current_entry = make_current(
-        paths,
-        current_saved_id.as_deref(),
-        labels,
-        tokens_map,
-        usage_map,
-        &ctx,
-    );
-    stop_usage_spinner(spinner);
+    let current_entry = make_current(paths, current_saved_id.as_deref(), labels, tokens_map, &ctx);
     if let Some(entry) = current_entry {
         let lines = render_entries(&[entry], &ctx, false);
         print_output_block(&lines.join("\n"));
@@ -313,19 +281,15 @@ pub fn status_profiles(paths: &Paths, all: bool, show_errors: bool) -> Result<()
 
 fn status_all_profiles(paths: &Paths, show_errors: bool) -> Result<(), String> {
     let snapshot = load_snapshot(paths, false)?;
-    let usage_map = &snapshot.usage_map;
-    let current_saved_id = current_saved_id(paths, usage_map, &snapshot.tokens);
-    let mut ctx = ListCtx::new(paths, true);
-    let spinner = start_usage_spinner(PROFILE_SPINNER_LOADING_PROFILES);
-    ctx.show_spinner = false;
+    let current_saved_id = current_saved_id(paths, &snapshot.tokens);
+    let ctx = ListCtx::new(paths, true);
 
-    let ordered = ordered_profiles(&snapshot.usage_map);
+    let ordered = ordered_from_tokens(&snapshot.tokens);
     let current_entry = make_current(
         paths,
         current_saved_id.as_deref(),
         &snapshot.labels,
         &snapshot.tokens,
-        &snapshot.usage_map,
         &ctx,
     );
     let filtered: Vec<(String, u64)> = ordered
@@ -336,12 +300,13 @@ fn status_all_profiles(paths: &Paths, show_errors: bool) -> Result<(), String> {
     let mut hidden_api_count = 0usize;
     let mut hidden_error_count = 0usize;
     let mut list_entries = Vec::new();
+    let labels_by_id = labels_by_id(&snapshot.labels);
     for (id, ts) in filtered {
         if is_api_saved_profile(&id, &snapshot) {
             hidden_api_count += 1;
             continue;
         }
-        let entry = make_saved(&id, ts, &snapshot, None, &ctx);
+        let entry = make_saved(&id, ts, &snapshot, &labels_by_id, None, &ctx);
         if !show_errors && entry.error_summary.is_some() {
             hidden_error_count += 1;
             continue;
@@ -362,8 +327,6 @@ fn status_all_profiles(paths: &Paths, show_errors: bool) -> Result<(), String> {
             current_visible = Some(entry);
         }
     }
-
-    stop_usage_spinner(spinner);
 
     if current_visible.is_none()
         && list_entries.is_empty()
@@ -408,30 +371,6 @@ fn status_all_profiles(paths: &Paths, show_errors: bool) -> Result<(), String> {
     Ok(())
 }
 
-pub fn status_label(paths: &Paths, label: &str) -> Result<(), String> {
-    let snapshot = load_snapshot(paths, false)?;
-    let id = resolve_label_id(&snapshot.labels, label)?;
-    let current_saved_id = current_saved_id(paths, &snapshot.usage_map, &snapshot.tokens);
-    let mut ctx = ListCtx::new(paths, true);
-    let spinner = start_usage_spinner(PROFILE_SPINNER_LOADING_PROFILE);
-    ctx.show_spinner = false;
-    let is_current = current_saved_id.as_deref() == Some(id.as_str());
-    let label = label_for_id(&snapshot.labels, &id);
-    let profile_path = ctx.profiles_dir.join(format!("{id}.json"));
-    let entry = make_entry(
-        label,
-        snapshot.tokens.get(&id),
-        snapshot.index.profiles.get(&id),
-        &profile_path,
-        &ctx,
-        is_current,
-    );
-    stop_usage_spinner(spinner);
-    let lines = render_entries(&[entry], &ctx, true);
-    print_output_block(&lines.join("\n"));
-    Ok(())
-}
-
 pub type Labels = BTreeMap<String, String>;
 
 const PROFILES_INDEX_VERSION: u8 = 2;
@@ -442,8 +381,6 @@ pub(crate) struct ProfilesIndex {
     version: u8,
     #[serde(default)]
     profiles: BTreeMap<String, ProfileIndexEntry>,
-    #[serde(default)]
-    pub(crate) update_cache: Option<UpdateCache>,
 }
 
 impl Default for ProfilesIndex {
@@ -451,7 +388,6 @@ impl Default for ProfilesIndex {
         Self {
             version: PROFILES_INDEX_VERSION,
             profiles: BTreeMap::new(),
-            update_cache: None,
         }
     }
 }
@@ -467,8 +403,6 @@ struct ProfileIndexEntry {
     #[serde(default)]
     label: Option<String>,
     #[serde(default)]
-    added_at: u64,
-    #[serde(default)]
     is_api_key: bool,
     #[serde(default)]
     principal_id: Option<String>,
@@ -476,22 +410,6 @@ struct ProfileIndexEntry {
     workspace_or_org_id: Option<String>,
     #[serde(default)]
     plan_type_key: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct UpdateCache {
-    #[serde(default)]
-    pub(crate) latest_version: String,
-    #[serde(default = "update_cache_checked_default")]
-    pub(crate) last_checked_at: DateTime<Utc>,
-    #[serde(default)]
-    pub(crate) dismissed_version: Option<String>,
-    #[serde(default)]
-    pub(crate) last_prompted_at: Option<DateTime<Utc>>,
-}
-
-fn update_cache_checked_default() -> DateTime<Utc> {
-    DateTime::<Utc>::from_timestamp(0, 0).unwrap_or_else(Utc::now)
 }
 
 fn profiles_index_version() -> u8 {
@@ -504,8 +422,9 @@ pub(crate) fn read_profiles_index(paths: &Paths) -> Result<ProfilesIndex, String
     }
     let contents = fs::read_to_string(&paths.profiles_index)
         .map_err(|err| crate::msg2(PROFILE_ERR_READ_INDEX, paths.profiles_index.display(), err))?;
-    let had_legacy_schema =
-        contents.contains("\"last_used\"") || contents.contains("\"active_profile_id\"");
+    let had_legacy_schema = contents.contains("\"last_used\"")
+        || contents.contains("\"active_profile_id\"")
+        || contents.contains("\"update_cache\"");
     let mut index: ProfilesIndex = serde_json::from_str(&contents).map_err(|_| {
         crate::msg1(
             PROFILE_ERR_INDEX_INVALID_JSON,
@@ -567,25 +486,13 @@ fn labels_from_index(index: &ProfilesIndex) -> Labels {
     labels
 }
 
-fn usage_map_from_index(_index: &ProfilesIndex, ids: &HashSet<String>) -> BTreeMap<String, u64> {
-    let mut usage_map = BTreeMap::new();
-    for id in ids {
-        usage_map.insert(id.clone(), 0);
-    }
-    usage_map
-}
-
 fn update_profiles_index_entry(
     index: &mut ProfilesIndex,
     id: &str,
     tokens: Option<&Tokens>,
     label: Option<String>,
-    now: u64,
 ) {
     let entry = index.profiles.entry(id.to_string()).or_default();
-    if entry.added_at == 0 {
-        entry.added_at = now;
-    }
     if let Some(tokens) = tokens {
         let (email, plan) = extract_email_and_plan(tokens);
         entry.email = email;
@@ -601,23 +508,6 @@ fn update_profiles_index_entry(
     if let Some(label) = label {
         entry.label = Some(label);
     }
-}
-
-pub fn read_labels(paths: &Paths) -> Result<Labels, String> {
-    let index = read_profiles_index(paths)?;
-    Ok(labels_from_index(&index))
-}
-
-pub fn write_labels(paths: &Paths, labels: &Labels) -> Result<(), String> {
-    let normalized = normalize_labels(labels);
-    let mut index = read_profiles_index_relaxed(paths);
-    for (id, entry) in index.profiles.iter_mut() {
-        entry.label = label_for_id(&normalized, id);
-    }
-    for (label, id) in &normalized {
-        index.profiles.entry(id.clone()).or_default().label = Some(label.clone());
-    }
-    write_profiles_index(paths, &index)
 }
 
 pub fn prune_labels(labels: &mut Labels, profiles_dir: &Path) {
@@ -652,6 +542,14 @@ pub fn label_for_id(labels: &Labels, id: &str) -> Option<String> {
             None
         }
     })
+}
+
+fn labels_by_id(labels: &Labels) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    for (label, id) in labels {
+        out.entry(id.clone()).or_insert_with(|| label.clone());
+    }
+    out
 }
 
 pub fn resolve_label_id(labels: &Labels, label: &str) -> Result<String, String> {
@@ -749,8 +647,6 @@ pub fn load_profile_tokens_map(
 
 pub(crate) fn resolve_save_id(
     paths: &Paths,
-    map: &mut BTreeMap<String, u64>,
-    labels: &mut Labels,
     profiles_index: &mut ProfilesIndex,
     tokens: &Tokens,
 ) -> Result<String, String> {
@@ -758,26 +654,14 @@ pub(crate) fn resolve_save_id(
     let identity =
         extract_profile_identity(tokens).ok_or_else(|| AUTH_ERR_INCOMPLETE_ACCOUNT.to_string())?;
     let (desired_base, desired, candidates) = desired_candidates(paths, &identity, &email, &plan)?;
-    if has_usage_signal(&candidates, map)
-        && let Some(primary) = pick_primary(&candidates, map).filter(|primary| primary != &desired)
-    {
-        return rename_profile_id(
-            paths,
-            map,
-            labels,
-            profiles_index,
-            &primary,
-            &desired_base,
-            &identity,
-        );
+    if let Some(primary) = pick_primary(&candidates).filter(|primary| primary != &desired) {
+        return rename_profile_id(paths, profiles_index, &primary, &desired_base, &identity);
     }
     Ok(desired)
 }
 
 pub(crate) fn resolve_sync_id(
     paths: &Paths,
-    map: &mut BTreeMap<String, u64>,
-    labels: &mut Labels,
     profiles_index: &mut ProfilesIndex,
     tokens: &Tokens,
 ) -> Result<Option<String>, String> {
@@ -788,28 +672,17 @@ pub(crate) fn resolve_sync_id(
         return Ok(None);
     };
     let (desired_base, desired, candidates) = desired_candidates(paths, &identity, &email, &plan)?;
-    if !has_usage_signal(&candidates, map) {
-        if candidates.len() == 1 {
-            return Ok(candidates.first().cloned());
-        }
-        if candidates.iter().any(|id| id == &desired) {
-            return Ok(Some(desired));
-        }
-        return Ok(None);
+    if candidates.len() == 1 {
+        return Ok(candidates.first().cloned());
     }
-    let Some(primary) = pick_primary(&candidates, map) else {
+    if candidates.iter().any(|id| id == &desired) {
+        return Ok(Some(desired));
+    }
+    let Some(primary) = pick_primary(&candidates) else {
         return Ok(None);
     };
     if primary != desired {
-        let renamed = rename_profile_id(
-            paths,
-            map,
-            labels,
-            profiles_index,
-            &primary,
-            &desired_base,
-            &identity,
-        )?;
+        let renamed = rename_profile_id(paths, profiles_index, &primary, &desired_base, &identity)?;
         return Ok(Some(renamed));
     }
     Ok(Some(primary))
@@ -831,27 +704,8 @@ pub(crate) fn cached_profile_ids(
         .collect()
 }
 
-pub(crate) fn pick_primary(
-    candidates: &[String],
-    usage_map: &BTreeMap<String, u64>,
-) -> Option<String> {
-    let mut best: Option<(String, u64)> = None;
-    for candidate in candidates {
-        if let Some(ts) = usage_map.get(candidate).filter(|ts| {
-            best.as_ref()
-                .map(|(_, best_ts)| *ts > best_ts)
-                .unwrap_or(true)
-        }) {
-            best = Some((candidate.clone(), *ts));
-        }
-    }
-    best.map(|(id, _)| id)
-}
-
-fn has_usage_signal(candidates: &[String], usage_map: &BTreeMap<String, u64>) -> bool {
-    candidates
-        .iter()
-        .any(|id| usage_map.get(id).copied().unwrap_or(0) > 0)
+pub(crate) fn pick_primary(candidates: &[String]) -> Option<String> {
+    candidates.iter().min().cloned()
 }
 
 fn desired_candidates(
@@ -981,8 +835,6 @@ fn matches_identity(tokens: &Tokens, identity: &ProfileIdentityKey) -> bool {
 
 fn rename_profile_id(
     paths: &Paths,
-    map: &mut BTreeMap<String, u64>,
-    labels: &mut Labels,
     profiles_index: &mut ProfilesIndex,
     from: &str,
     target_base: &str,
@@ -999,10 +851,6 @@ fn rename_profile_id(
     }
     fs::rename(&from_path, &to_path)
         .map_err(|err| crate::msg2(PROFILE_ERR_RENAME_PROFILE, from, err))?;
-    if let Some(ts) = map.remove(from) {
-        map.insert(desired.clone(), ts);
-    }
-    labels.retain(|_, value| value != from);
     if let Some(entry) = profiles_index.profiles.remove(from) {
         profiles_index.profiles.insert(desired.clone(), entry);
     }
@@ -1010,31 +858,23 @@ fn rename_profile_id(
 }
 
 pub(crate) struct Snapshot {
-    pub(crate) usage_map: BTreeMap<String, u64>,
     pub(crate) labels: Labels,
     pub(crate) tokens: BTreeMap<String, Result<Tokens, String>>,
     pub(crate) index: ProfilesIndex,
 }
 
-pub(crate) fn sync_current(
-    paths: &Paths,
-    map: &mut BTreeMap<String, u64>,
-    labels: &mut Labels,
-    index: &mut ProfilesIndex,
-) -> Result<(), String> {
+pub(crate) fn sync_current(paths: &Paths, index: &mut ProfilesIndex) -> Result<(), String> {
     let Some(tokens) = read_tokens_opt(&paths.auth) else {
         return Ok(());
     };
-    let id = match resolve_sync_id(paths, map, labels, index, &tokens)? {
+    let id = match resolve_sync_id(paths, index, &tokens)? {
         Some(id) => id,
         None => return Ok(()),
     };
     let target = profile_path_for_id(&paths.profiles, &id);
     sync_profile(paths, &target)?;
-    let now = now_seconds();
-    map.insert(id.clone(), now);
-    let label = label_for_id(labels, &id);
-    update_profiles_index_entry(index, &id, Some(&tokens), label, now);
+    let label = label_for_id(&labels_from_index(index), &id);
+    update_profiles_index_entry(index, &id, Some(&tokens), label);
     Ok(())
 }
 
@@ -1056,11 +896,9 @@ pub(crate) fn load_snapshot(paths: &Paths, strict_labels: bool) -> Result<Snapsh
     for id in &ids {
         index.profiles.entry(id.clone()).or_default();
     }
-    let usage_map = usage_map_from_index(&index, &ids);
     let labels = labels_from_index(&index);
 
     Ok(Snapshot {
-        usage_map,
         labels,
         tokens,
         index,
@@ -1086,18 +924,16 @@ pub(crate) fn unsaved_reason(
 
 pub(crate) fn current_saved_id(
     paths: &Paths,
-    usage_map: &BTreeMap<String, u64>,
     tokens_map: &BTreeMap<String, Result<Tokens, String>>,
 ) -> Option<String> {
     let tokens = read_tokens_opt(&paths.auth)?;
     let identity = extract_profile_identity(&tokens)?;
     let candidates = cached_profile_ids(tokens_map, &identity);
-    pick_primary(&candidates, usage_map)
+    pick_primary(&candidates)
 }
 
 pub(crate) struct ProfileStore {
     _lock: UsageLock,
-    pub(crate) usage_map: BTreeMap<String, u64>,
     pub(crate) labels: Labels,
     pub(crate) profiles_index: ProfilesIndex,
 }
@@ -1111,11 +947,9 @@ impl ProfileStore {
         for id in &ids {
             profiles_index.profiles.entry(id.clone()).or_default();
         }
-        let usage_map = usage_map_from_index(&profiles_index, &ids);
         let labels = labels_from_index(&profiles_index);
         Ok(Self {
             _lock: lock,
-            usage_map,
             labels,
             profiles_index,
         })
@@ -1140,11 +974,17 @@ fn load_snapshot_ordered(
     no_profiles_message: &str,
 ) -> Result<(Snapshot, Vec<(String, u64)>), String> {
     let snapshot = load_snapshot(paths, strict_labels)?;
-    let ordered = ordered_profiles(&snapshot.usage_map);
+    let ordered = ordered_from_tokens(&snapshot.tokens);
     if ordered.is_empty() {
         return Err(no_profiles_message.to_string());
     }
     Ok((snapshot, ordered))
+}
+
+fn ordered_from_tokens(
+    tokens_map: &BTreeMap<String, Result<Tokens, String>>,
+) -> Vec<(String, u64)> {
+    tokens_map.keys().cloned().map(|id| (id, 0)).collect()
 }
 
 fn copy_profile(source: &Path, dest: &Path, context: &str) -> Result<(), String> {
@@ -1158,7 +998,7 @@ fn make_candidates(
     snapshot: &Snapshot,
     ordered: &[(String, u64)],
 ) -> Vec<Candidate> {
-    let current_saved = current_saved_id(paths, &snapshot.usage_map, &snapshot.tokens);
+    let current_saved = current_saved_id(paths, &snapshot.tokens);
     build_candidates(ordered, snapshot, current_saved.as_deref())
 }
 
@@ -1288,8 +1128,9 @@ pub(crate) fn build_candidates(
 ) -> Vec<Candidate> {
     let mut candidates = Vec::with_capacity(ordered.len());
     let use_color = use_color_stderr();
+    let labels_by_id = labels_by_id(&snapshot.labels);
     for (id, _ts) in ordered {
-        let label = label_for_id(&snapshot.labels, id);
+        let label = labels_by_id.get(id).cloned();
         let tokens = snapshot
             .tokens
             .get(id)
@@ -1523,7 +1364,6 @@ fn detail_lines(
             account_id,
             unavailable_text,
             ctx.now,
-            ctx.show_spinner,
         ) {
             Ok(details) => (details, None, false),
             Err(err) if err.status_code() == Some(401) => {
@@ -1543,7 +1383,6 @@ fn detail_lines(
                             account_id,
                             unavailable_text,
                             ctx.now,
-                            ctx.show_spinner,
                         ) {
                             Ok(details) => (details, None, true),
                             Err(err) => (
@@ -1630,11 +1469,12 @@ fn make_saved(
     id: &str,
     _ts: u64,
     snapshot: &Snapshot,
+    labels_by_id: &BTreeMap<String, String>,
     current_saved_id: Option<&str>,
     ctx: &ListCtx,
 ) -> Entry {
     let profile_path = ctx.profiles_dir.join(format!("{id}.json"));
-    let label = label_for_id(&snapshot.labels, id);
+    let label = labels_by_id.get(id).cloned();
     let is_current = current_saved_id == Some(id);
     make_entry(
         label,
@@ -1652,7 +1492,10 @@ fn make_entries(
     current_saved_id: Option<&str>,
     ctx: &ListCtx,
 ) -> Vec<Entry> {
-    let build = |(id, ts): &(String, u64)| make_saved(id, *ts, snapshot, current_saved_id, ctx);
+    let labels_by_id = labels_by_id(&snapshot.labels);
+    let build = |(id, ts): &(String, u64)| {
+        make_saved(id, *ts, snapshot, &labels_by_id, current_saved_id, ctx)
+    };
     if ctx.show_usage && ordered.len() >= 3 {
         if ordered.len() > MAX_USAGE_CONCURRENCY {
             let mut entries = Vec::with_capacity(ordered.len());
@@ -1687,7 +1530,6 @@ fn make_current(
     current_saved_id: Option<&str>,
     labels: &Labels,
     tokens_map: &BTreeMap<String, Result<Tokens, String>>,
-    usage_map: &BTreeMap<String, u64>,
     ctx: &ListCtx,
 ) -> Option<Entry> {
     if !paths.auth.is_file() {
@@ -1708,7 +1550,7 @@ fn make_current(
     };
     let resolved_saved_id = extract_profile_identity(&tokens).and_then(|identity| {
         let candidates = cached_profile_ids(tokens_map, &identity);
-        pick_primary(&candidates, usage_map)
+        pick_primary(&candidates)
     });
     let effective_saved_id = current_saved_id.or(resolved_saved_id.as_deref());
     let label = effective_saved_id.and_then(|id| label_for_id(labels, id));
@@ -1735,7 +1577,7 @@ fn make_current(
         }
     }
 
-    if is_unsaved && !plan_is_free {
+    if is_unsaved {
         details.extend(format_unsaved_warning(use_color));
     }
 
@@ -1755,7 +1597,6 @@ struct ListCtx {
     base_url: Option<String>,
     now: DateTime<Local>,
     show_usage: bool,
-    show_spinner: bool,
     use_color: bool,
     profiles_dir: PathBuf,
     auth_path: PathBuf,
@@ -1767,7 +1608,6 @@ impl ListCtx {
             base_url: show_usage.then(|| read_base_url(paths)),
             now: Local::now(),
             show_usage,
-            show_spinner: show_usage,
             use_color: use_color_stdout(),
             profiles_dir: paths.profiles.clone(),
             auth_path: paths.auth.clone(),
@@ -1801,22 +1641,6 @@ fn trim_label(label: &str) -> Result<&str, String> {
     Ok(trimmed)
 }
 
-fn normalize_labels(labels: &Labels) -> Labels {
-    let mut normalized = BTreeMap::new();
-    for (label, id) in labels {
-        let trimmed = label.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let id = id.trim();
-        if id.is_empty() {
-            continue;
-        }
-        normalized.insert(trimmed.to_string(), id.to_string());
-    }
-    normalized
-}
-
 fn is_profile_file(path: &Path) -> bool {
     let Some(ext) = path.extension().and_then(|ext| ext.to_str()) else {
         return false;
@@ -1826,7 +1650,7 @@ fn is_profile_file(path: &Path) -> bool {
     }
     !matches!(
         path.file_name().and_then(|name| name.to_str()),
-        Some("profiles.json")
+        Some("profiles.json" | "update.json")
     )
 }
 
@@ -1836,7 +1660,6 @@ mod tests {
     use crate::test_utils::{build_id_token, make_paths};
     use base64::Engine;
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-    use std::collections::BTreeMap;
     use std::fs;
     use std::path::{Path, PathBuf};
 
@@ -2000,7 +1823,6 @@ mod tests {
                 email: Some("me@example.com".to_string()),
                 plan: Some("Team".to_string()),
                 label: Some("work".to_string()),
-                added_at: 1,
                 is_api_key: false,
                 principal_id: Some("principal-1".to_string()),
                 workspace_or_org_id: Some("workspace-1".to_string()),
@@ -2014,7 +1836,6 @@ mod tests {
         assert_eq!(entry.email.as_deref(), Some("me@example.com"));
         assert_eq!(entry.plan.as_deref(), Some("Team"));
         assert_eq!(entry.label.as_deref(), Some("work"));
-        assert_eq!(entry.added_at, 1);
         assert!(!entry.is_api_key);
         assert_eq!(entry.principal_id.as_deref(), Some("principal-1"));
         assert_eq!(entry.workspace_or_org_id.as_deref(), Some("workspace-1"));
@@ -2091,6 +1912,25 @@ mod tests {
         assert!(map.contains_key("valid"));
     }
 
+    #[test]
+    fn load_profile_tokens_map_ignores_update_cache_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = make_paths(dir.path());
+        fs::create_dir_all(&paths.profiles).unwrap();
+        fs::write(
+            &paths.update_cache,
+            serde_json::json!({
+                "latest_version": "0.1.0",
+                "last_checked_at": "2026-01-01T00:00:00Z"
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let map = load_profile_tokens_map(&paths).unwrap();
+        assert!(map.is_empty());
+        assert!(paths.update_cache.is_file());
+    }
+
     #[cfg(unix)]
     #[test]
     fn load_profile_tokens_map_remove_error() {
@@ -2113,12 +1953,10 @@ mod tests {
         fs::create_dir_all(&paths.profiles).unwrap();
         write_profile(&paths, "one", "acct", "a@b.com", "pro");
         let tokens = read_tokens(&paths.profiles.join("one.json")).unwrap();
-        let mut usage_map = BTreeMap::new();
-        let mut labels = Labels::new();
         let mut index = ProfilesIndex::default();
-        let id = resolve_save_id(&paths, &mut usage_map, &mut labels, &mut index, &tokens).unwrap();
+        let id = resolve_save_id(&paths, &mut index, &tokens).unwrap();
         assert!(!id.is_empty());
-        let id = resolve_sync_id(&paths, &mut usage_map, &mut labels, &mut index, &tokens).unwrap();
+        let id = resolve_sync_id(&paths, &mut index, &tokens).unwrap();
         assert!(id.is_some());
     }
 
@@ -2127,13 +1965,9 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let paths = make_paths(dir.path());
         fs::create_dir_all(&paths.profiles).unwrap();
-        let mut usage_map = BTreeMap::new();
-        let mut labels = Labels::new();
         let mut index = ProfilesIndex::default();
         let err = rename_profile_id(
             &paths,
-            &mut usage_map,
-            &mut labels,
             &mut index,
             "missing",
             "base",
@@ -2155,7 +1989,6 @@ mod tests {
             base_url: None,
             now: chrono::Local::now(),
             show_usage: false,
-            show_spinner: false,
             use_color: false,
             profiles_dir: PathBuf::new(),
             auth_path: PathBuf::new(),
@@ -2199,8 +2032,7 @@ mod tests {
         save_profile(&paths, Some("team".to_string())).unwrap();
         list_profiles(&paths).unwrap();
         status_profiles(&paths, false, false).unwrap();
-        let label = read_labels(&paths).unwrap().keys().next().cloned().unwrap();
-        status_label(&paths, &label).unwrap();
+        status_profiles(&paths, true, false).unwrap();
     }
 
     #[test]

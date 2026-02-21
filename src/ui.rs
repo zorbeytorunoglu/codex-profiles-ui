@@ -31,19 +31,6 @@ pub fn use_color_stderr() -> bool {
     supports_color(Stream::Stderr)
 }
 
-pub fn use_tty_stderr() -> bool {
-    use_color_stderr()
-}
-
-pub fn terminal_width() -> Option<usize> {
-    if is_plain() {
-        return None;
-    }
-    std::env::var("COLUMNS")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-}
-
 fn supports_color(stream: Stream) -> bool {
     if is_plain() {
         return false;
@@ -279,16 +266,6 @@ pub fn print_output_block(message: &str) {
     println!("\n{message}\n");
 }
 
-pub fn print_output_block_with_frame(message: &str, separator: &str) {
-    if is_plain() {
-        print_output_block(message);
-        return;
-    }
-    let message = indent_output(message);
-    let separator = indent_output(separator);
-    println!("\n{separator}\n{message}\n{separator}\n");
-}
-
 fn indent_output(message: &str) -> String {
     message
         .lines()
@@ -357,19 +334,6 @@ mod tests {
             crate::AUTH_RELOGIN_AND_SAVE
         );
         assert_eq!(warning, expected);
-    }
-
-    #[test]
-    fn terminal_width_parses_columns() {
-        let _plain = set_plain_guard(false);
-        let _env = set_env_guard("COLUMNS", Some("80"));
-        assert_eq!(terminal_width(), Some(80));
-    }
-
-    #[test]
-    fn terminal_width_none_when_plain() {
-        let _plain = set_plain_guard(true);
-        assert_eq!(terminal_width(), None);
     }
 
     #[test]
@@ -499,7 +463,6 @@ mod tests {
     fn print_output_blocks() {
         let _plain = set_plain_guard(true);
         print_output_block("hi");
-        print_output_block_with_frame("hi", "-");
     }
 
     #[test]

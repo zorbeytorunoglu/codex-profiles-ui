@@ -2,22 +2,18 @@ use chrono::{DateTime, Local};
 use colored::Colorize;
 use fslock::LockFile;
 use serde::Deserialize;
-use std::collections::{BTreeMap, HashSet};
 use std::fs;
-use std::io::Write;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use crate::{
     AUTH_RELOGIN_AND_SAVE, Paths, UI_ERROR_TWO_LINE, UI_INFO_PREFIX, USAGE_ERR_ACCESS_DENIED_403,
     USAGE_ERR_INVALID_RESPONSE, USAGE_ERR_LOCK_ACQUIRE, USAGE_ERR_LOCK_HELD, USAGE_ERR_LOCK_OPEN,
     USAGE_ERR_RATE_LIMITED_429, USAGE_ERR_REQUEST_FAILED_CODE, USAGE_ERR_SERVICE_UNREACHABLE,
-    USAGE_ERR_UNAUTHORIZED_401_TITLE, USAGE_SPINNER_LOADING_PROFILE, USAGE_UNAVAILABLE_402_DETAIL,
-    USAGE_UNAVAILABLE_402_TITLE, USAGE_UNAVAILABLE_DEFAULT, command_name,
+    USAGE_ERR_UNAUTHORIZED_401_TITLE, USAGE_UNAVAILABLE_402_DETAIL, USAGE_UNAVAILABLE_402_TITLE,
+    USAGE_UNAVAILABLE_DEFAULT, command_name,
 };
-use crate::{is_plain, style_text, use_color_stdout, use_tty_stderr};
+use crate::{is_plain, style_text, use_color_stdout};
 
 const DEFAULT_BASE_URL: &str = "https://chatgpt.com/backend-api";
 const USER_AGENT: &str = "codex-profiles";
@@ -26,7 +22,7 @@ const LOCK_TIMEOUT: Duration = Duration::from_secs(10);
 const LOCK_RETRY_DELAY: Duration = Duration::from_secs(1);
 
 #[cfg(test)]
-use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[cfg(test)]
 const LOCK_FAIL_ERR: usize = 1;
@@ -214,14 +210,8 @@ pub fn fetch_usage_details(
     account_id: &str,
     unavailable_text: &str,
     now: DateTime<Local>,
-    show_spinner: bool,
 ) -> Result<Vec<String>, UsageFetchError> {
-    let spinner = show_spinner.then(|| start_spinner(USAGE_SPINNER_LOADING_PROFILE));
-    let payload = fetch_usage_payload(base_url, access_token, account_id);
-    if let Some(spinner) = spinner {
-        stop_spinner(spinner);
-    }
-    let payload = payload?;
+    let payload = fetch_usage_payload(base_url, access_token, account_id)?;
     let limits = build_usage_limits(&payload, now);
     Ok(format_usage(
         format_limit(limits.five_hour.as_ref(), now, unavailable_text),
@@ -270,57 +260,6 @@ fn usage_window_output(window: &RateLimitWindowSnapshot, now: DateTime<Local>) -
         reset_at,
         reset_at_relative,
     }
-}
-
-struct SpinnerHandle {
-    stop: Arc<AtomicBool>,
-    handle: Option<JoinHandle<()>>,
-}
-
-pub(crate) struct UsageSpinner(SpinnerHandle);
-
-pub(crate) fn start_usage_spinner(message: &str) -> UsageSpinner {
-    UsageSpinner(start_spinner(message))
-}
-
-pub(crate) fn stop_usage_spinner(spinner: UsageSpinner) {
-    stop_spinner(spinner.0)
-}
-
-fn start_spinner(message: &str) -> SpinnerHandle {
-    if !use_tty_stderr() || is_plain() {
-        return SpinnerHandle {
-            stop: Arc::new(AtomicBool::new(true)),
-            handle: None,
-        };
-    }
-    let stop = Arc::new(AtomicBool::new(false));
-    let stop_thread = Arc::clone(&stop);
-    let message = message.to_string();
-    let handle = thread::spawn(move || {
-        let frames = [".  ", ".. ", "...", " ..", "  .", "   "];
-        let mut idx = 0usize;
-        while !stop_thread.load(Ordering::Relaxed) {
-            let frame = frames[idx % frames.len()];
-            eprint!("\r{message} {frame}");
-            let _ = std::io::stderr().flush();
-            idx += 1;
-            thread::sleep(Duration::from_millis(80));
-        }
-    });
-    SpinnerHandle {
-        stop,
-        handle: Some(handle),
-    }
-}
-
-fn stop_spinner(mut spinner: SpinnerHandle) {
-    spinner.stop.store(true, Ordering::Relaxed);
-    if let Some(handle) = spinner.handle.take() {
-        let _ = handle.join();
-    }
-    eprint!("\r\x1b[2K");
-    let _ = std::io::stderr().flush();
 }
 
 pub(crate) struct UsageLine {
@@ -604,39 +543,6 @@ fn try_lock(lock: &mut LockFile) -> Result<bool, fslock::Error> {
     }
 }
 
-pub fn normalize_usage(entries: &[(String, u64)], ids: &HashSet<String>) -> BTreeMap<String, u64> {
-    let mut map = BTreeMap::new();
-    for id in ids {
-        map.insert(id.clone(), 0);
-    }
-    for (id, ts) in entries {
-        if !ids.contains(id) {
-            continue;
-        }
-        let entry = map.entry(id.clone()).or_insert(0);
-        if *ts > *entry {
-            *entry = *ts;
-        }
-    }
-    map
-}
-
-pub fn ordered_profiles(map: &BTreeMap<String, u64>) -> Vec<(String, u64)> {
-    let mut ordered = map
-        .iter()
-        .map(|(id, ts)| (id.clone(), *ts))
-        .collect::<Vec<_>>();
-    ordered.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-    ordered
-}
-
-pub fn now_seconds() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .unwrap_or(0)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -694,20 +600,13 @@ mod tests {
     }
 
     #[test]
-    fn fetch_usage_details_with_spinner() {
+    fn fetch_usage_details_paths() {
         let payload = r#"{"rate_limit":{"primary_window":{"used_percent":10.0,"limit_window_seconds":3600,"reset_at":1}}}"#;
         let resp = http_ok_response(payload, "application/json");
         let url = spawn_server(resp);
         let base_url = format!("{url}/backend-api");
-        let lines = fetch_usage_details(
-            &base_url,
-            "token",
-            "acct",
-            "unavailable",
-            Local::now(),
-            true,
-        )
-        .unwrap();
+        let lines =
+            fetch_usage_details(&base_url, "token", "acct", "unavailable", Local::now()).unwrap();
         assert!(!lines.is_empty());
     }
 

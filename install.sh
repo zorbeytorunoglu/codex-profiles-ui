@@ -97,7 +97,7 @@ verify_checksum() {
     basename="$(basename "$file")"
     local expected actual
     
-    expected="$(grep "release/$basename" "$checksum_file" | awk '{print $1}')"
+    expected="$(awk -v needle="release/$basename" '$2 ~ needle {print $1; exit}' "$checksum_file")"
     if [ -z "$expected" ]; then
         error "checksum not found for $basename in checksum file"
     fi
@@ -154,8 +154,12 @@ main() {
     
     info "Downloading checksums from repo..."
     if ! download_file "$checksum_url" "$checksum_path" "false"; then
-        warn "Could not download checksum file from repo"
-        warn "Proceeding without verification (not recommended)"
+        if [[ "${CODEX_PROFILES_ALLOW_INSECURE_INSTALL:-0}" == "1" ]]; then
+            warn "Could not download checksum file from repo"
+            warn "Proceeding without verification because CODEX_PROFILES_ALLOW_INSECURE_INSTALL=1"
+        else
+            error "could not download checksum file from repo; aborting install.\nSet CODEX_PROFILES_ALLOW_INSECURE_INSTALL=1 to bypass (not recommended)."
+        fi
     else
         verify_checksum "$archive_path" "$checksum_path"
     fi
@@ -232,6 +236,7 @@ Options:
 Environment variables:
   CODEX_PROFILES_VERSION          Override default version
   CODEX_PROFILES_INSTALL_DIR      Override default install directory
+  CODEX_PROFILES_ALLOW_INSECURE_INSTALL  Set to 1 to bypass checksum requirement
   NO_COLOR                        Disable colored output
 
 Security:
