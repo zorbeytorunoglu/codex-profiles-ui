@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-VERSION="${CODEX_PROFILES_VERSION:-0.1.0}"
+VERSION="${CODEX_PROFILES_VERSION:-${new_ver}}"
 REPO="midhunmonachan/codex-profiles"
 INSTALL_DIR="${CODEX_PROFILES_INSTALL_DIR:-$HOME/.local/bin}"
 
