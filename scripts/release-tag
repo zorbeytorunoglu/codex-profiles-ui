@@ -7,7 +7,8 @@ usage() {
   cat <<'EOF'
 Usage: scripts/release-tag [--bump patch|minor|major]
 
-If --bump is provided, the script updates Cargo.toml + package.json, commits
+If --bump is provided, the script updates Cargo.toml, package.json
+(version + optionalDependencies), and install.sh (VERSION default), commits
 the version bump, and creates the tag.
 EOF
 }
@@ -101,10 +102,15 @@ from pathlib import Path
 path = Path("package.json")
 data = json.loads(path.read_text(encoding="utf-8"))
 data["version"] = "${new_ver}"
+if "optionalDependencies" in data:
+    data["optionalDependencies"] = {
+        k: "${new_ver}" for k in data["optionalDependencies"]
+    }
 path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 PY
+  sed -i 's|VERSION="${CODEX_PROFILES_VERSION:-[^}]*}"|VERSION="${CODEX_PROFILES_VERSION:-${new_ver}}"|' install.sh
 
-  git add Cargo.toml package.json
+  git add Cargo.toml package.json install.sh
   git commit -m "chore: bump version to v${new_ver}"
 
   cargo_ver="${new_ver}"
