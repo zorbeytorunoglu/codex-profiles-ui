@@ -6,6 +6,11 @@ use std::path::PathBuf;
 use std::time::Duration as StdDuration;
 
 use crate::{Paths, UpdateCache, lock_usage, read_profiles_index, write_profiles_index};
+use crate::{
+    UPDATE_ERR_PERSIST_DISMISSAL, UPDATE_ERR_READ_CHOICE, UPDATE_ERR_REFRESH_VERSION,
+    UPDATE_ERR_SHOW_PROMPT, UPDATE_NON_TTY_RUN, UPDATE_OPTION_NOW, UPDATE_OPTION_SKIP,
+    UPDATE_OPTION_SKIP_VERSION, UPDATE_PROMPT_SELECT, UPDATE_RELEASE_NOTES, UPDATE_TITLE_AVAILABLE,
+};
 
 // We use the latest version from the cask if installation is via homebrew - homebrew does not immediately pick up the latest release and can lag behind.
 const HOMEBREW_CASK_URL: &str =
@@ -15,7 +20,6 @@ const LATEST_RELEASE_URL: &str =
 const RELEASE_NOTES_URL: &str = "https://github.com/midhunmonachan/codex-profiles/releases/latest";
 const HOMEBREW_CASK_URL_OVERRIDE_ENV_VAR: &str = "CODEX_PROFILES_HOMEBREW_CASK_URL";
 const LATEST_RELEASE_URL_OVERRIDE_ENV_VAR: &str = "CODEX_PROFILES_LATEST_RELEASE_URL";
-const UPDATE_AVAILABLE: &str = "Update available!";
 
 /// Update action the CLI should perform after the prompt exits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -176,34 +180,49 @@ fn run_update_prompt_if_needed_with_io_and_source(
     if !is_tty {
         write_prompt(
             output,
-            format_args!("{UPDATE_AVAILABLE} {current_version} -> {latest_version}\n"),
+            format_args!(
+                "{} {current_version} -> {latest_version}\n",
+                UPDATE_TITLE_AVAILABLE
+            ),
         )?;
         write_prompt(
             output,
-            format_args!("Run `{}` to update.\n", update_action.command_str()),
+            format_args!(
+                "{}",
+                crate::msg1(UPDATE_NON_TTY_RUN, update_action.command_str())
+            ),
         )?;
         return Ok(UpdatePromptOutcome::Continue);
     }
 
     write_prompt(
         output,
-        format_args!("\n✨ {UPDATE_AVAILABLE} {current_version} -> {latest_version}\n"),
+        format_args!(
+            "\n✨ {} {current_version} -> {latest_version}\n",
+            UPDATE_TITLE_AVAILABLE
+        ),
     )?;
-    write_prompt(output, format_args!("Release notes: {RELEASE_NOTES_URL}\n"))?;
+    write_prompt(
+        output,
+        format_args!("{}", crate::msg1(UPDATE_RELEASE_NOTES, RELEASE_NOTES_URL)),
+    )?;
     write_prompt(output, format_args!("\n"))?;
     write_prompt(
         output,
-        format_args!("1) Update now (runs `{}`)\n", update_action.command_str()),
+        format_args!(
+            "{}",
+            crate::msg1(UPDATE_OPTION_NOW, update_action.command_str())
+        ),
     )?;
-    write_prompt(output, format_args!("2) Skip\n"))?;
-    write_prompt(output, format_args!("3) Skip until next version\n"))?;
-    write_prompt(output, format_args!("Select [1-3]: "))?;
+    write_prompt(output, format_args!("{}", UPDATE_OPTION_SKIP))?;
+    write_prompt(output, format_args!("{}", UPDATE_OPTION_SKIP_VERSION))?;
+    write_prompt(output, format_args!("{}", UPDATE_PROMPT_SELECT))?;
     output.flush().map_err(prompt_io_error)?;
 
     let mut selection = String::new();
     input
         .read_line(&mut selection)
-        .map_err(|err| format!("Error: failed to read update choice: {err}"))?;
+        .map_err(|err| crate::msg1(UPDATE_ERR_READ_CHOICE, err))?;
 
     match selection.trim() {
         "1" => Ok(UpdatePromptOutcome::RunUpdate(update_action)),
@@ -211,7 +230,7 @@ fn run_update_prompt_if_needed_with_io_and_source(
             if let Err(err) = dismiss_version(config, &latest_version) {
                 write_prompt(
                     output,
-                    format_args!("Failed to persist update dismissal: {err}\n"),
+                    format_args!("{}", crate::msg1(UPDATE_ERR_PERSIST_DISMISSAL, err)),
                 )?;
             }
             Ok(UpdatePromptOutcome::Continue)
@@ -221,7 +240,7 @@ fn run_update_prompt_if_needed_with_io_and_source(
 }
 
 fn prompt_io_error(err: impl std::fmt::Display) -> String {
-    format!("Error: failed to prompt for update: {err}")
+    crate::msg1(UPDATE_ERR_SHOW_PROMPT, err)
 }
 
 fn write_prompt(output: &mut impl Write, args: std::fmt::Arguments) -> Result<(), String> {
@@ -263,7 +282,7 @@ fn get_upgrade_version_with_debug(config: &UpdateConfig, is_debug: bool) -> Opti
     if should_check {
         if info.is_none() {
             if let Err(err) = check_for_update(&paths) {
-                eprintln!("Failed to update version: {err}");
+                eprintln!("{}", crate::msg1(UPDATE_ERR_REFRESH_VERSION, err));
             }
             info = read_update_cache(&paths).ok().flatten();
         } else {
@@ -271,7 +290,7 @@ fn get_upgrade_version_with_debug(config: &UpdateConfig, is_debug: bool) -> Opti
             std::thread::spawn(move || {
                 let paths = paths_for_update(codex_home);
                 if let Err(err) = check_for_update(&paths) {
-                    eprintln!("Failed to update version: {err}");
+                    eprintln!("{}", crate::msg1(UPDATE_ERR_REFRESH_VERSION, err));
                 }
             });
         }

@@ -10,7 +10,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use crate::{Paths, command_name};
+use crate::{
+    AUTH_RELOGIN_AND_SAVE, Paths, UI_ERROR_TWO_LINE, UI_INFO_PREFIX, USAGE_ERR_ACCESS_DENIED_403,
+    USAGE_ERR_INVALID_RESPONSE, USAGE_ERR_LOCK_ACQUIRE, USAGE_ERR_LOCK_HELD, USAGE_ERR_LOCK_OPEN,
+    USAGE_ERR_RATE_LIMITED_429, USAGE_ERR_REQUEST_FAILED_CODE, USAGE_ERR_SERVICE_UNREACHABLE,
+    USAGE_ERR_UNAUTHORIZED_401_TITLE, USAGE_SPINNER_LOADING_PROFILE, USAGE_UNAVAILABLE_402_DETAIL,
+    USAGE_UNAVAILABLE_402_TITLE, USAGE_UNAVAILABLE_DEFAULT, command_name,
+};
 use crate::{is_plain, style_text, use_color_stdout, use_tty_stderr};
 
 const DEFAULT_BASE_URL: &str = "https://chatgpt.com/backend-api";
@@ -59,13 +65,21 @@ impl UsageFetchError {
 
     pub fn message(&self) -> String {
         match self {
-            UsageFetchError::Status(code) => {
-                format!("Error: failed to fetch usage: http status: {code}")
-            }
-            UsageFetchError::Transport(err) => {
-                format!("Error: failed to fetch usage: {err}")
-            }
-            UsageFetchError::Parse(err) => format!("Error: failed to parse usage: {err}"),
+            UsageFetchError::Status(401) => crate::msg2(
+                UI_ERROR_TWO_LINE,
+                USAGE_ERR_UNAUTHORIZED_401_TITLE,
+                AUTH_RELOGIN_AND_SAVE,
+            ),
+            UsageFetchError::Status(402) => crate::msg2(
+                UI_ERROR_TWO_LINE,
+                USAGE_UNAVAILABLE_402_TITLE,
+                USAGE_UNAVAILABLE_402_DETAIL,
+            ),
+            UsageFetchError::Status(403) => USAGE_ERR_ACCESS_DENIED_403.to_string(),
+            UsageFetchError::Status(429) => USAGE_ERR_RATE_LIMITED_429.to_string(),
+            UsageFetchError::Status(code) => crate::msg1(USAGE_ERR_REQUEST_FAILED_CODE, code),
+            UsageFetchError::Transport(err) => crate::msg1(USAGE_ERR_SERVICE_UNREACHABLE, err),
+            UsageFetchError::Parse(err) => crate::msg1(USAGE_ERR_INVALID_RESPONSE, err),
         }
     }
 }
@@ -202,7 +216,7 @@ pub fn fetch_usage_details(
     now: DateTime<Local>,
     show_spinner: bool,
 ) -> Result<Vec<String>, UsageFetchError> {
-    let spinner = show_spinner.then(|| start_spinner("Loading profile"));
+    let spinner = show_spinner.then(|| start_spinner(USAGE_SPINNER_LOADING_PROFILE));
     let payload = fetch_usage_payload(base_url, access_token, account_id);
     if let Some(spinner) = spinner {
         stop_spinner(spinner);
@@ -214,16 +228,6 @@ pub fn fetch_usage_details(
         format_limit(limits.weekly.as_ref(), now, unavailable_text),
         unavailable_text,
     ))
-}
-
-pub(crate) fn fetch_usage_limits(
-    base_url: &str,
-    access_token: &str,
-    account_id: &str,
-    now: DateTime<Local>,
-) -> Result<UsageLimits, UsageFetchError> {
-    let payload = fetch_usage_payload(base_url, access_token, account_id)?;
-    Ok(build_usage_limits(&payload, now))
 }
 
 fn build_usage_limits(payload: &UsagePayload, now: DateTime<Local>) -> UsageLimits {
@@ -362,17 +366,13 @@ pub(crate) fn format_limit(
     }
 }
 
-pub fn usage_unavailable(plan_is_free: bool) -> &'static str {
-    if plan_is_free {
-        "You need a ChatGPT subscription to use Codex CLI"
-    } else {
-        "Data not available"
-    }
+pub fn usage_unavailable() -> &'static str {
+    USAGE_UNAVAILABLE_DEFAULT
 }
 
 pub fn format_usage_unavailable(text: &str, use_color: bool) -> String {
     if is_plain() {
-        format!("INFO: {text}")
+        crate::msg1(UI_INFO_PREFIX, text)
     } else if use_color {
         text.red().bold().to_string()
     } else {
@@ -397,32 +397,11 @@ pub(crate) fn format_usage(
     let multiple = available.len() > 1;
     available
         .into_iter()
-        .enumerate()
-        .map(|(idx, line)| {
+        .map(|line| {
             let dim = use_color && multiple && has_zero && line.left_percent != Some(0);
-            let label = if multiple {
-                if idx == 0 {
-                    Some("Primary window")
-                } else {
-                    Some("Secondary window")
-                }
-            } else {
-                None
-            };
-            format_usage_line(label, &line, dim, use_color)
+            format_usage_line(&line, dim, use_color)
         })
         .collect()
-}
-
-pub fn format_last_used(ts: u64) -> String {
-    if ts == 0 {
-        return "unknown".to_string();
-    }
-    let timestamp = UNIX_EPOCH + Duration::from_secs(ts);
-    match SystemTime::now().duration_since(timestamp) {
-        Ok(duration) => format_relative_duration(duration, true),
-        Err(err) => format_relative_duration(err.duration(), false),
-    }
 }
 
 pub(crate) fn format_reset_relative(reset_at: i64, now: DateTime<Local>) -> Option<String> {
@@ -435,11 +414,7 @@ pub(crate) fn format_reset_relative(reset_at: i64, now: DateTime<Local>) -> Opti
     Some(format_duration(duration, DurationStyle::ResetTimer))
 }
 
-fn format_usage_line(label: Option<&str>, line: &UsageLine, dim: bool, use_color: bool) -> String {
-    let prefix = label
-        .filter(|value| !value.is_empty())
-        .map(|value| format!("{value}: "))
-        .unwrap_or_default();
+fn format_usage_line(line: &UsageLine, dim: bool, use_color: bool) -> String {
     let reset = reset_label(&line.reset);
     let reset = reset.to_string();
     let percent = if line.percent.is_empty() {
@@ -450,9 +425,6 @@ fn format_usage_line(label: Option<&str>, line: &UsageLine, dim: bool, use_color
     let resets = format_resets_suffix(&reset, use_color);
     if is_plain() {
         let mut out = String::new();
-        if !prefix.is_empty() {
-            out.push_str(&prefix);
-        }
         if !percent.is_empty() {
             out.push_str(&percent);
         }
@@ -475,9 +447,9 @@ fn format_usage_line(label: Option<&str>, line: &UsageLine, dim: bool, use_color
         line.bar.clone()
     };
     let formatted = if percent.is_empty() {
-        format!("{prefix}{bar}{resets}")
+        format!("{bar}{resets}")
     } else {
-        format!("{prefix}{bar} {percent}{resets}")
+        format!("{bar} {percent}{resets}")
     };
     if dim && use_color {
         formatted.dimmed().to_string()
@@ -557,17 +529,7 @@ where
     true
 }
 
-fn format_relative_duration(duration: Duration, past: bool) -> String {
-    let text = format_duration(duration, DurationStyle::LastUsed);
-    if past {
-        format!("{text} ago")
-    } else {
-        format!("in {text}")
-    }
-}
-
 enum DurationStyle {
-    LastUsed,
     ResetTimer,
 }
 
@@ -583,7 +545,6 @@ fn format_duration(duration: Duration, style: DurationStyle) -> String {
         (secs / (60 * 60 * 24), "d")
     };
     match style {
-        DurationStyle::LastUsed => format!("{value}{unit}"),
         DurationStyle::ResetTimer => format!("in {value}{unit}"),
     }
 }
@@ -601,21 +562,18 @@ pub struct UsageLock {
 pub fn lock_usage(paths: &Paths) -> Result<UsageLock, String> {
     let start = Instant::now();
     let mut lock = LockFile::open(&paths.profiles_lock)
-        .map_err(|err| format!("Error: failed to open profiles lock: {err}"))?;
+        .map_err(|err| crate::msg1(USAGE_ERR_LOCK_OPEN, err))?;
     loop {
         match try_lock(&mut lock) {
             Ok(true) => break,
             Ok(false) => {
                 if start.elapsed() > lock_timeout() {
-                    return Err(format!(
-                        "Error: could not acquire profiles lock. Ensure no other {} is running and retry.",
-                        command_name()
-                    ));
+                    return Err(crate::msg1(USAGE_ERR_LOCK_ACQUIRE, command_name()));
                 }
                 thread::sleep(LOCK_RETRY_DELAY);
             }
             Err(err) => {
-                return Err(format!("Error: failed to lock profiles file: {err}"));
+                return Err(crate::msg1(USAGE_ERR_LOCK_HELD, err));
             }
         }
     }
@@ -780,12 +738,9 @@ mod tests {
     #[test]
     fn usage_unavailable_paths() {
         let _plain = set_plain_guard(true);
-        assert_eq!(
-            usage_unavailable(true),
-            "You need a ChatGPT subscription to use Codex CLI"
-        );
+        assert_eq!(usage_unavailable(), "Data not available");
         let text = format_usage_unavailable("text", false);
-        assert!(text.contains("INFO"));
+        assert!(text.contains("Info"));
     }
 
     #[test]
@@ -800,17 +755,6 @@ mod tests {
     }
 
     #[test]
-    fn last_used_formatting() {
-        assert_eq!(format_last_used(0), "unknown");
-        let future = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs()
-            + 60;
-        assert!(format_last_used(future).contains("in"));
-    }
-
-    #[test]
     fn format_usage_line_plain_and_dim() {
         let line = UsageLine {
             bar: render_bar(50.0),
@@ -819,7 +763,7 @@ mod tests {
             left_percent: Some(50),
         };
         let _plain = set_plain_guard(true);
-        let plain = format_usage_line(None, &line, false, false);
+        let plain = format_usage_line(&line, false, false);
         assert!(plain.contains("left"));
     }
 
@@ -835,11 +779,9 @@ mod tests {
 
     #[test]
     fn format_duration_helpers() {
-        let text = format_relative_duration(Duration::from_secs(30), true);
-        assert!(text.contains("ago"));
         assert_eq!(
-            format_duration(Duration::from_secs(60), DurationStyle::LastUsed),
-            "1m"
+            format_duration(Duration::from_secs(60), DurationStyle::ResetTimer),
+            "in 1m"
         );
         assert!(local_from_timestamp(0).is_some());
         assert!(local_from_timestamp(-1).is_some());
@@ -855,10 +797,10 @@ mod tests {
 
         LOCK_FAILPOINT.store(LOCK_FAIL_BUSY, Ordering::Relaxed);
         let err = lock_usage(&paths).unwrap_err();
-        assert!(err.contains("could not acquire profiles lock"));
+        assert!(err.contains("Could not acquire profiles lock"));
         LOCK_FAILPOINT.store(LOCK_FAIL_ERR, Ordering::Relaxed);
         let err = lock_usage(&paths).unwrap_err();
-        assert!(err.contains("failed to lock profiles file"));
+        assert!(err.contains("Could not lock profiles file"));
         LOCK_FAILPOINT.store(0, Ordering::Relaxed);
     }
 
@@ -876,6 +818,6 @@ mod tests {
         let mut paths = make_paths(dir.path());
         paths.profiles_lock = lock_dir.join("profiles.lock");
         let err = lock_usage(&paths).unwrap_err();
-        assert!(err.contains("failed to open profiles lock"));
+        assert!(err.contains("Could not open profiles lock"));
     }
 }

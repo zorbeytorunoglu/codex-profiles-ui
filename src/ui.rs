@@ -4,11 +4,16 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use supports_color::Stream;
 
 use crate::has_auth;
+use crate::{
+    CANCELLED_MESSAGE, UI_ERROR_PREFIX, UI_HINT_LIST_PROFILES, UI_HINT_LOGIN_AND_SAVE,
+    UI_HINT_LOGIN_SAVE_BEFORE_LOADING, UI_HINT_SAVE_BEFORE_LOADING, UI_HINT_SAVE_PROFILE,
+    UI_INFO_PREFIX, UI_NO_SAVED_PROFILES, UI_NORMALIZED_AUTH_INCOMPLETE,
+    UI_NORMALIZED_AUTH_INVALID, UI_NORMALIZED_NOT_LOGGED_IN, UI_UNKNOWN_PROFILE, UI_WARNING_PREFIX,
+    UI_WARNING_UNSAVED_PROFILE,
+};
 use crate::{Paths, command_name};
 
 static PLAIN: AtomicBool = AtomicBool::new(false);
-
-pub const CANCELLED_MESSAGE: &str = "Cancelled.";
 
 pub fn set_plain(value: bool) {
     PLAIN.store(value, Ordering::Relaxed);
@@ -71,11 +76,16 @@ pub fn format_action(message: &str, use_color: bool) -> String {
 }
 
 pub fn format_warning(message: &str, use_color: bool) -> String {
-    let text = if is_plain() {
-        format!("WARNING: {message}")
-    } else {
-        format!("Warning: {message}")
-    };
+    let prefix = UI_WARNING_PREFIX;
+    let mut lines = message.lines();
+    let first = lines.next().unwrap_or_default();
+    let mut text = format!("{prefix}{first}");
+    let indent = " ".repeat(prefix.len());
+    for line in lines {
+        text.push('\n');
+        text.push_str(&indent);
+        text.push_str(line);
+    }
     style_text(&text, use_color, |text| text.yellow().dimmed().italic())
 }
 
@@ -85,7 +95,7 @@ pub fn format_cancel(use_color: bool) -> String {
 
 pub fn format_hint(message: &str, use_color: bool) -> String {
     if is_plain() {
-        format!("INFO: {message}")
+        crate::msg1(UI_INFO_PREFIX, message)
     } else {
         let message = format!("\n\n{message}");
         style_text(&message, use_color, |text| text.italic())
@@ -96,27 +106,24 @@ pub fn format_no_profiles(paths: &Paths, use_color: bool) -> String {
     let hint = format_save_hint(
         paths,
         use_color,
-        "Run {save} to save this profile.",
-        "Run {login} • then {save}.",
+        UI_HINT_SAVE_PROFILE,
+        UI_HINT_LOGIN_AND_SAVE,
     );
-    format!("No saved profiles. {hint}")
+    crate::msg1(UI_NO_SAVED_PROFILES, hint)
 }
 
 pub fn format_save_before_load(paths: &Paths, use_color: bool) -> String {
     format_save_hint(
         paths,
         use_color,
-        "Run {save} before loading.",
-        "Run {login}, then {save} before loading.",
+        UI_HINT_SAVE_BEFORE_LOADING,
+        UI_HINT_LOGIN_SAVE_BEFORE_LOADING,
     )
 }
 
 pub fn format_unsaved_warning(use_color: bool) -> Vec<String> {
-    let warning = "WARNING: This profile is not saved yet.";
-    let save_line = format!(
-        "Run {} to save this profile.",
-        format_command("save", false)
-    );
+    let warning = UI_WARNING_UNSAVED_PROFILE;
+    let save_line = UI_HINT_SAVE_PROFILE.replace("{save}", &format_command("save", false));
     if !use_color {
         return vec![warning.to_string(), save_line];
     }
@@ -128,31 +135,45 @@ pub fn format_unsaved_warning(use_color: bool) -> Vec<String> {
 
 pub fn format_list_hint(use_color: bool) -> String {
     let list = format_command("list", use_color);
-    format_hint(&format!("Run {list} to see saved profiles."), use_color)
+    format_hint(&UI_HINT_LIST_PROFILES.replace("{list}", &list), use_color)
 }
 
 pub fn normalize_error(message: &str) -> String {
-    let message = message.strip_prefix("Error: ").unwrap_or(message);
-    if message.contains("codex login") {
-        if message.contains("not found") {
-            return "Not logged in. Run `codex login`.".to_string();
+    let message = message
+        .strip_prefix(&format!("{} ", UI_ERROR_PREFIX))
+        .unwrap_or(message);
+    let message_lower = message.to_ascii_lowercase();
+    if message_lower.contains("codex login")
+        && !message.contains("(401)")
+        && !message_lower.contains("unauthorized")
+    {
+        if message_lower.contains("not found") {
+            return UI_NORMALIZED_NOT_LOGGED_IN.to_string();
         }
-        if message.contains("invalid JSON") {
-            return "Auth file is invalid. Run `codex login`.".to_string();
+        if message_lower.contains("invalid json") {
+            return UI_NORMALIZED_AUTH_INVALID.to_string();
         }
-        return "Auth is incomplete. Run `codex login`.".to_string();
+        return UI_NORMALIZED_AUTH_INCOMPLETE.to_string();
     }
     message.to_string()
 }
 
 pub fn format_error(message: &str) -> String {
     let normalized = normalize_error(message);
-    let prefix = if use_color_stdout() {
-        "Error:".red().bold().blink().to_string()
+    let use_color = use_color_stdout();
+    let prefix = if use_color {
+        UI_ERROR_PREFIX.red().bold().blink().to_string()
     } else {
-        "Error:".to_string()
+        UI_ERROR_PREFIX.to_string()
     };
-    format!("{prefix} {normalized}")
+    let mut lines = normalized.lines();
+    let first = lines.next().unwrap_or_default();
+    let mut text = format!("{prefix} {first}");
+    for line in lines {
+        text.push('\n');
+        text.push_str(&style_text(line, use_color, |text| text.dimmed().italic()));
+    }
+    text
 }
 
 pub fn format_profile_display(
@@ -180,74 +201,46 @@ pub fn format_profile_display(
     match email {
         Some(email) => {
             let plan = plan.unwrap_or_else(|| "Unknown".to_string());
-            let plan_is_free = crate::is_free_plan(Some(&plan));
             let badge = format_plan_badge(&plan, is_current, use_color);
             if use_color {
-                let email_badge = format_email_badge(&email, plan_is_free, is_current);
+                let email_badge = format_email_badge(&email, is_current);
                 format!("{badge}{email_badge}{label_suffix}")
             } else {
                 format!("{badge} {email}{label_suffix}")
             }
         }
-        None => format!("Unknown profile{label_suffix}"),
+        None => crate::msg1(UI_UNKNOWN_PROFILE, label_suffix),
     }
 }
 
-pub fn format_entry_header(
-    display: &str,
-    last_used: &str,
-    is_current: bool,
-    use_color: bool,
-) -> String {
-    let mut base = if use_color {
+pub fn format_entry_header(display: &str, use_color: bool) -> String {
+    if use_color {
         display.bold().to_string()
     } else {
         display.to_string()
-    };
-    if !is_current && !last_used.is_empty() && !last_used.eq_ignore_ascii_case("unknown") {
-        base.push_str(&format_last_used_badge(last_used, use_color));
     }
-    base
 }
 
-fn format_plan_badge(plan: &str, is_current: bool, use_color: bool) -> String {
+fn format_plan_badge(plan: &str, _is_current: bool, use_color: bool) -> String {
     let plan_upper = plan.to_uppercase();
     let text = format!(" {} ", plan_upper);
-    let plan_is_free = crate::is_free_plan(Some(plan));
     if use_color {
-        if plan_is_free {
-            text.white().on_bright_red().bold().to_string()
-        } else if is_current {
-            text.white().on_bright_green().bold().to_string()
-        } else {
-            text.white().on_bright_magenta().bold().to_string()
-        }
+        text.white().on_bright_black().to_string()
     } else {
         format!("[{plan_upper}]")
     }
 }
 
-fn format_last_used_badge(last_used: &str, use_color: bool) -> String {
-    if use_color {
-        let text = format!(" {last_used}");
-        style_text(&text, use_color, |text| text.dimmed().italic())
-    } else {
-        format!(" ({last_used})")
-    }
-}
-
 fn format_label(label: Option<&str>, use_color: bool) -> String {
     match label {
-        Some(value) if use_color => format!(" {value} ").white().on_bright_black().to_string(),
+        Some(value) if use_color => format!(" {value} ").black().on_white().dimmed().to_string(),
         Some(value) => format!(" ({value})"),
         None => String::new(),
     }
 }
 
-fn format_email_badge(email: &str, plan_is_free: bool, is_current: bool) -> String {
-    if plan_is_free {
-        format!(" {email} ").white().on_red().to_string()
-    } else if is_current {
+fn format_email_badge(email: &str, is_current: bool) -> String {
+    if is_current {
         format!(" {email} ").white().on_green().to_string()
     } else {
         format!(" {email} ").white().on_magenta().to_string()
@@ -345,9 +338,25 @@ mod tests {
             let _plain = set_plain_guard(true);
             assert!(is_plain());
             let warning = format_warning("oops", false);
-            assert!(warning.contains("WARNING"));
+            assert!(warning.contains("Warning"));
         }
         assert!(!is_plain());
+    }
+
+    #[test]
+    fn format_warning_multiline_aligns_continuation() {
+        let message = format!(
+            "{}\n{}",
+            crate::AUTH_REFRESH_401_TITLE,
+            crate::AUTH_RELOGIN_AND_SAVE
+        );
+        let warning = format_warning(&message, false);
+        let expected = format!(
+            "Warning: {}\n         {}",
+            crate::AUTH_REFRESH_401_TITLE,
+            crate::AUTH_RELOGIN_AND_SAVE
+        );
+        assert_eq!(warning, expected);
     }
 
     #[test]
@@ -397,7 +406,7 @@ mod tests {
     fn format_unsaved_warning_plain() {
         let lines = format_unsaved_warning(false);
         assert_eq!(lines.len(), 2);
-        assert!(lines[0].contains("WARNING"));
+        assert!(lines[0].contains("Warning"));
     }
 
     #[test]
@@ -429,6 +438,25 @@ mod tests {
     }
 
     #[test]
+    fn format_error_multiline_aligns_continuation() {
+        let _env = set_env_guard("NO_COLOR", Some("1"));
+        let message = crate::msg2(
+            crate::UI_ERROR_TWO_LINE,
+            crate::AUTH_REFRESH_401_TITLE,
+            crate::AUTH_RELOGIN_AND_SAVE,
+        );
+        let err = format_error(&message);
+        assert_eq!(
+            err,
+            crate::msg2(
+                crate::UI_ERROR_TWO_LINE,
+                crate::AUTH_REFRESH_401_TITLE,
+                crate::AUTH_RELOGIN_AND_SAVE
+            )
+        );
+    }
+
+    #[test]
     fn format_profile_display_variants() {
         let key = format_profile_display(
             Some("Key".to_string()),
@@ -452,7 +480,7 @@ mod tests {
 
     #[test]
     fn format_entry_header_and_separator() {
-        let header = format_entry_header("Display", "1d", false, false);
+        let header = format_entry_header("Display", false);
         assert!(header.contains("Display"));
         let indented = super::indent_output("line\n\nline2");
         assert!(indented.contains("line2"));

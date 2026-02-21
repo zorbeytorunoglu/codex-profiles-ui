@@ -107,7 +107,7 @@ rm ~/.local/bin/codex-profiles
 | --- | --- |
 | `codex-profiles save [--label <name>]` | Save the current `auth.json` as a profile, optionally labeled. |
 | `codex-profiles load [--label <name>]` | Load a profile from the picker without re-login (or by label). |
-| `codex-profiles list` | List profiles ordered by last used. |
+| `codex-profiles list` | List saved profiles. |
 | `codex-profiles status [--all] [--label <name>]` | Show usage for the current profile, all profiles, or a specific label. |
 | `codex-profiles delete [--yes] [--label <name>]` | Delete profiles from the picker (or by label). |
 

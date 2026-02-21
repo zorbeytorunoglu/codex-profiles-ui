@@ -1,4 +1,4 @@
-use codex_profiles::{format_last_used, parse_config_value};
+use codex_profiles::parse_config_value;
 
 #[test]
 fn parses_config_value_with_inline_comment() {
@@ -18,9 +18,4 @@ fn preserves_hash_inside_quotes() {
 fn ignores_other_keys_and_empty_values() {
     assert!(parse_config_value("other = \"value\"", "chatgpt_base_url").is_none());
     assert!(parse_config_value("chatgpt_base_url = '' # comment", "chatgpt_base_url").is_none());
-}
-
-#[test]
-fn format_last_used_unknown_for_zero() {
-    assert_eq!(format_last_used(0), "unknown");
 }

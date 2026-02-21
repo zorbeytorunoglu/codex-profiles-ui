@@ -11,6 +11,15 @@ use std::cell::Cell;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::{
+    COMMON_ERR_CREATE_DIR, COMMON_ERR_CREATE_PROFILES_DIR, COMMON_ERR_CREATE_TEMP,
+    COMMON_ERR_EXISTS_NOT_DIR, COMMON_ERR_EXISTS_NOT_FILE, COMMON_ERR_GET_TIME,
+    COMMON_ERR_INVALID_FILE_NAME, COMMON_ERR_READ_FILE, COMMON_ERR_READ_METADATA,
+    COMMON_ERR_REPLACE_FILE, COMMON_ERR_RESOLVE_HOME, COMMON_ERR_RESOLVE_PARENT,
+    COMMON_ERR_SET_PERMISSIONS, COMMON_ERR_SET_TEMP_PERMISSIONS, COMMON_ERR_WRITE_LOCK_FILE,
+    COMMON_ERR_WRITE_TEMP,
+};
+
 pub struct Paths {
     pub codex: PathBuf,
     pub auth: PathBuf,
@@ -83,8 +92,7 @@ fn maybe_fail(_step: usize) -> std::io::Result<()> {
 }
 
 pub fn resolve_paths() -> Result<Paths, String> {
-    let home_dir =
-        resolve_home_dir().ok_or_else(|| "Error: could not resolve home directory".to_string())?;
+    let home_dir = resolve_home_dir().ok_or_else(|| COMMON_ERR_RESOLVE_HOME.to_string())?;
     let codex_dir = home_dir.join(".codex");
     let auth = codex_dir.join("auth.json");
     let profiles = codex_dir.join("profiles");
@@ -156,16 +164,17 @@ fn non_empty_path(path: Option<PathBuf>) -> Option<PathBuf> {
 
 pub fn ensure_paths(paths: &Paths) -> Result<(), String> {
     if paths.profiles.exists() && !paths.profiles.is_dir() {
-        return Err(format!(
-            "Error: {} exists and is not a directory",
-            paths.profiles.display()
+        return Err(crate::msg1(
+            COMMON_ERR_EXISTS_NOT_DIR,
+            paths.profiles.display(),
         ));
     }
 
     fs::create_dir_all(&paths.profiles).map_err(|err| {
-        format!(
-            "Error: cannot create profiles directory {}: {err}",
-            paths.profiles.display()
+        crate::msg2(
+            COMMON_ERR_CREATE_PROFILES_DIR,
+            paths.profiles.display(),
+            err,
         )
     })?;
 
@@ -174,9 +183,10 @@ pub fn ensure_paths(paths: &Paths) -> Result<(), String> {
         use std::os::unix::fs::PermissionsExt;
         let perms = fs::Permissions::from_mode(0o700);
         if let Err(err) = set_profile_permissions(&paths.profiles, perms) {
-            return Err(format!(
-                "Error: cannot set permissions on {}: {err}",
-                paths.profiles.display()
+            return Err(crate::msg2(
+                COMMON_ERR_SET_PERMISSIONS,
+                paths.profiles.display(),
+                err,
             ));
         }
     }
@@ -189,9 +199,10 @@ pub fn ensure_paths(paths: &Paths) -> Result<(), String> {
         .append(true)
         .open(&paths.profiles_lock)
         .map_err(|err| {
-            format!(
-                "Error: cannot write profiles lock file {}: {err}",
-                paths.profiles_lock.display()
+            crate::msg2(
+                COMMON_ERR_WRITE_LOCK_FILE,
+                paths.profiles_lock.display(),
+                err,
             )
         })?;
 
@@ -222,27 +233,24 @@ fn write_atomic_with_permissions(
     contents: &[u8],
     permissions: Option<fs::Permissions>,
 ) -> Result<(), String> {
-    let parent = path.parent().ok_or_else(|| {
-        format!(
-            "Error: cannot resolve parent directory for {}",
-            path.display()
-        )
-    })?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| crate::msg1(COMMON_ERR_RESOLVE_PARENT, path.display()))?;
     if !parent.as_os_str().is_empty() {
         fs::create_dir_all(parent)
-            .map_err(|err| format!("Error: cannot create directory {}: {err}", parent.display()))?;
+            .map_err(|err| crate::msg2(COMMON_ERR_CREATE_DIR, parent.display(), err))?;
     }
 
     let file_name = path
         .file_name()
         .and_then(|name| name.to_str())
-        .ok_or_else(|| format!("Error: invalid file name {}", path.display()))?;
+        .ok_or_else(|| crate::msg1(COMMON_ERR_INVALID_FILE_NAME, path.display()))?;
     let pid = std::process::id();
     let mut attempt = 0u32;
     loop {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .map_err(|err| format!("Error: failed to get time: {err}"))?
+            .map_err(|err| crate::msg1(COMMON_ERR_GET_TIME, err))?
             .as_nanos();
         let tmp_name = format!(".{file_name}.tmp-{pid}-{nanos}-{attempt}");
         let tmp_path = parent.join(tmp_name);
@@ -263,41 +271,23 @@ fn write_atomic_with_permissions(
                 if attempt < 5 {
                     continue;
                 }
-                return Err(format!(
-                    "Error: failed to create temp file for {}: {err}",
-                    path.display()
-                ));
+                return Err(crate::msg2(COMMON_ERR_CREATE_TEMP, path.display(), err));
             }
         };
 
         maybe_fail(FAIL_WRITE_WRITE)
             .and_then(|_| tmp_file.write_all(contents))
-            .map_err(|err| {
-                format!(
-                    "Error: failed to write temp file for {}: {err}",
-                    path.display()
-                )
-            })?;
+            .map_err(|err| crate::msg2(COMMON_ERR_WRITE_TEMP, path.display(), err))?;
 
         if let Some(permissions) = permissions {
             maybe_fail(FAIL_WRITE_PERMS)
                 .and_then(|_| fs::set_permissions(&tmp_path, permissions))
-                .map_err(|err| {
-                    format!(
-                        "Error: failed to set temp file permissions for {}: {err}",
-                        path.display()
-                    )
-                })?;
+                .map_err(|err| crate::msg2(COMMON_ERR_SET_TEMP_PERMISSIONS, path.display(), err))?;
         }
 
         maybe_fail(FAIL_WRITE_SYNC)
             .and_then(|_| tmp_file.sync_all())
-            .map_err(|err| {
-                format!(
-                    "Error: failed to write temp file for {}: {err}",
-                    path.display()
-                )
-            })?;
+            .map_err(|err| crate::msg2(COMMON_ERR_WRITE_TEMP, path.display(), err))?;
 
         let rename_result = maybe_fail(FAIL_WRITE_RENAME).and_then(|_| fs::rename(&tmp_path, path));
         match rename_result {
@@ -313,10 +303,7 @@ fn write_atomic_with_permissions(
                     }
                 }
                 let _ = fs::remove_file(&tmp_path);
-                return Err(format!(
-                    "Error: failed to replace {}: {err}",
-                    path.display()
-                ));
+                return Err(crate::msg2(COMMON_ERR_REPLACE_FILE, path.display(), err));
             }
         }
     }
@@ -324,24 +311,16 @@ fn write_atomic_with_permissions(
 
 pub fn copy_atomic(source: &Path, dest: &Path) -> Result<(), String> {
     let permissions = fs::metadata(source)
-        .map_err(|err| {
-            format!(
-                "Error: failed to read metadata for {}: {err}",
-                source.display()
-            )
-        })?
+        .map_err(|err| crate::msg2(COMMON_ERR_READ_METADATA, source.display(), err))?
         .permissions();
-    let contents = fs::read(source)
-        .map_err(|err| format!("Error: failed to read {}: {err}", source.display()))?;
+    let contents =
+        fs::read(source).map_err(|err| crate::msg2(COMMON_ERR_READ_FILE, source.display(), err))?;
     write_atomic_with_permissions(dest, &contents, Some(permissions))
 }
 
 fn ensure_file_or_absent(path: &Path) -> Result<(), String> {
     if path.exists() && !path.is_file() {
-        return Err(format!(
-            "Error: {} exists and is not a file",
-            path.display()
-        ));
+        return Err(crate::msg1(COMMON_ERR_EXISTS_NOT_FILE, path.display()));
     }
     Ok(())
 }
@@ -527,7 +506,7 @@ mod tests {
         paths.profiles_index = profiles.join("profiles.json");
         paths.profiles_lock = profiles.join("profiles.lock");
         let err = ensure_paths(&paths).unwrap_err();
-        assert!(err.contains("cannot create profiles directory"));
+        assert!(err.contains("Cannot create profiles directory"));
     }
 
     #[cfg(unix)]
@@ -537,7 +516,7 @@ mod tests {
         let paths = make_paths(dir.path());
         with_failpoint(FAIL_SET_PERMISSIONS, || {
             let err = ensure_paths(&paths).unwrap_err();
-            assert!(err.contains("cannot set permissions"));
+            assert!(err.contains("Cannot set permissions"));
         });
     }
 
@@ -554,7 +533,7 @@ mod tests {
         let mut paths = make_paths(dir.path());
         paths.profiles_lock = lock.clone();
         let err = ensure_paths(&paths).unwrap_err();
-        assert!(err.contains("cannot write profiles lock file"));
+        assert!(err.contains("Cannot write profiles lock file"));
     }
 
     #[test]
@@ -586,7 +565,7 @@ mod tests {
         fs::write(&blocker, "file").expect("write");
         let path = blocker.join("child.txt");
         let err = write_atomic(&path, b"data").unwrap_err();
-        assert!(err.contains("cannot create directory"));
+        assert!(err.contains("Cannot create directory"));
     }
 
     #[test]
@@ -595,7 +574,7 @@ mod tests {
         let path = dir.path().join("file.txt");
         with_failpoint(FAIL_WRITE_OPEN, || {
             let err = write_atomic(&path, b"data").unwrap_err();
-            assert!(err.contains("failed to create temp file"));
+            assert!(err.contains("Failed to create temp file"));
         });
     }
 
@@ -605,7 +584,7 @@ mod tests {
         let path = dir.path().join("file.txt");
         with_failpoint(FAIL_WRITE_WRITE, || {
             let err = write_atomic(&path, b"data").unwrap_err();
-            assert!(err.contains("failed to write temp file"));
+            assert!(err.contains("Failed to write temp file"));
         });
     }
 
@@ -615,7 +594,7 @@ mod tests {
         let path = dir.path().join("file.txt");
         with_failpoint(FAIL_WRITE_PERMS, || {
             let err = write_atomic_with_mode(&path, b"data", 0o600).unwrap_err();
-            assert!(err.contains("failed to set temp file permissions"));
+            assert!(err.contains("Failed to set temp file permissions"));
         });
     }
 
@@ -625,7 +604,7 @@ mod tests {
         let path = dir.path().join("file.txt");
         with_failpoint(FAIL_WRITE_SYNC, || {
             let err = write_atomic(&path, b"data").unwrap_err();
-            assert!(err.contains("failed to write temp file"));
+            assert!(err.contains("Failed to write temp file"));
         });
     }
 
@@ -635,7 +614,7 @@ mod tests {
         let path = dir.path().join("file.txt");
         with_failpoint(FAIL_WRITE_RENAME, || {
             let err = write_atomic(&path, b"data").unwrap_err();
-            assert!(err.contains("failed to replace"));
+            assert!(err.contains("Failed to replace"));
         });
     }
 
@@ -657,7 +636,7 @@ mod tests {
         let source = dir.path().join("missing.txt");
         let dest = dir.path().join("dest.txt");
         let err = copy_atomic(&source, &dest).unwrap_err();
-        assert!(err.contains("failed to read metadata"));
+        assert!(err.contains("Failed to read metadata"));
     }
 
     #[test]

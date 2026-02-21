@@ -3,15 +3,14 @@ use colored::Colorize;
 use inquire::{Confirm, MultiSelect, Select};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
-use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use std::fmt;
 use std::fs;
 use std::io::{self, IsTerminal as _};
 use std::path::{Path, PathBuf};
 
 use crate::{
-    AUTH_ERR_INCOMPLETE_ACCOUNT, AUTH_ERR_PROFILE_NO_REFRESH_TOKEN, PROFILE_COPY_CONTEXT_LOAD,
+    AUTH_ERR_INCOMPLETE_ACCOUNT, AUTH_ERR_PROFILE_MISSING_EMAIL_PLAN, PROFILE_COPY_CONTEXT_LOAD,
     PROFILE_COPY_CONTEXT_SAVE, PROFILE_DELETE_HELP, PROFILE_ERR_COPY_CONTEXT,
     PROFILE_ERR_CURRENT_NOT_SAVED, PROFILE_ERR_DELETE_CONFIRM_REQUIRED, PROFILE_ERR_FAILED_DELETE,
     PROFILE_ERR_ID_NOT_FOUND, PROFILE_ERR_INDEX_INVALID_JSON, PROFILE_ERR_LABEL_EMPTY,
@@ -25,220 +24,32 @@ use crate::{
     PROFILE_MSG_REMOVED_INVALID, PROFILE_MSG_SAVED, PROFILE_MSG_SAVED_WITH, PROFILE_PROMPT_CANCEL,
     PROFILE_PROMPT_CONTINUE_WITHOUT_SAVING, PROFILE_PROMPT_DELETE_MANY, PROFILE_PROMPT_DELETE_ONE,
     PROFILE_PROMPT_DELETE_SELECTED, PROFILE_PROMPT_SAVE_AND_CONTINUE,
-    PROFILE_SPINNER_LOADING_PROFILE, PROFILE_SPINNER_LOADING_PROFILES, PROFILE_SUMMARY_AUTH_ERROR,
-    PROFILE_SUMMARY_AUTH_REFRESH, PROFILE_SUMMARY_ERROR, PROFILE_SUMMARY_FILE_MISSING,
-    PROFILE_SUMMARY_USAGE_ERROR, PROFILE_UNSAVED_NO_MATCH, PROFILE_WARN_CURRENT_NOT_SAVED_REASON,
-    UI_ERROR_PREFIX,
+    PROFILE_SPINNER_LOADING_PROFILE, PROFILE_SPINNER_LOADING_PROFILES, PROFILE_STATUS_API_HIDDEN,
+    PROFILE_STATUS_ERROR_HIDDEN, PROFILE_SUMMARY_AUTH_ERROR, PROFILE_SUMMARY_ERROR,
+    PROFILE_SUMMARY_FILE_MISSING, PROFILE_SUMMARY_USAGE_ERROR, PROFILE_UNSAVED_NO_MATCH,
+    PROFILE_WARN_CURRENT_NOT_SAVED_REASON, UI_ERROR_PREFIX, UI_ERROR_TWO_LINE,
 };
 use crate::{
     CANCELLED_MESSAGE, format_action, format_entry_header, format_error, format_list_hint,
     format_no_profiles, format_save_before_load, format_unsaved_warning, format_warning,
     inquire_select_render_config, is_inquire_cancel, is_plain, normalize_error, print_output_block,
-    print_output_block_with_frame, style_text, terminal_width, use_color_stderr, use_color_stdout,
+    style_text, use_color_stderr, use_color_stdout,
 };
-use crate::{Paths, USAGE_UNAVAILABLE_API_KEY, command_name, copy_atomic, write_atomic};
+use crate::{
+    Paths, USAGE_UNAVAILABLE_API_KEY_DETAIL, USAGE_UNAVAILABLE_API_KEY_TITLE, command_name,
+    copy_atomic, write_atomic,
+};
 use crate::{
     ProfileIdentityKey, Tokens, extract_email_and_plan, extract_profile_identity,
     is_api_key_profile, is_free_plan, is_profile_ready, profile_error, read_tokens,
     read_tokens_opt, refresh_profile_tokens, require_identity, token_account_id,
 };
 use crate::{
-    UsageLock, UsageWindow, fetch_usage_details, fetch_usage_limits, format_last_used,
-    format_usage_unavailable, lock_usage, now_seconds, ordered_profiles, read_base_url,
-    start_usage_spinner, stop_usage_spinner, usage_unavailable,
+    UsageLock, fetch_usage_details, format_usage_unavailable, lock_usage, now_seconds,
+    ordered_profiles, read_base_url, start_usage_spinner, stop_usage_spinner, usage_unavailable,
 };
 
 const MAX_USAGE_CONCURRENCY: usize = 4;
-
-#[derive(Clone, Copy, Default)]
-struct UsageSortKey {
-    five_hour_left: Option<i64>,
-    secondary_left: Option<i64>,
-    reset_at: Option<i64>,
-    usable: bool,
-}
-
-fn ordered_profiles_by_usage(
-    snapshot: &Snapshot,
-    ctx: &ListCtx,
-    current_saved_id: Option<&str>,
-) -> Vec<(String, u64)> {
-    let mut ordered = snapshot
-        .usage_map
-        .iter()
-        .map(|(id, ts)| (id.clone(), *ts))
-        .collect::<Vec<_>>();
-    let usage_scores = usage_sort_scores(snapshot, ctx, current_saved_id);
-    ordered.sort_by(|(left_id, left_ts), (right_id, right_ts)| {
-        let left_score = usage_scores.get(left_id).copied().unwrap_or_default();
-        let right_score = usage_scores.get(right_id).copied().unwrap_or_default();
-        let left_has_primary = left_score.five_hour_left.is_some();
-        let right_has_primary = right_score.five_hour_left.is_some();
-        let mut ordering = right_has_primary.cmp(&left_has_primary);
-        if ordering != Ordering::Equal {
-            return ordering;
-        }
-        ordering = right_score.usable.cmp(&left_score.usable);
-        if ordering != Ordering::Equal {
-            return ordering;
-        }
-        if left_score.usable && right_score.usable {
-            ordering = right_score
-                .five_hour_left
-                .unwrap_or(-1)
-                .cmp(&left_score.five_hour_left.unwrap_or(-1));
-            if ordering != Ordering::Equal {
-                return ordering;
-            }
-            ordering = right_score
-                .secondary_left
-                .unwrap_or(-1)
-                .cmp(&left_score.secondary_left.unwrap_or(-1));
-            if ordering != Ordering::Equal {
-                return ordering;
-            }
-        } else if !left_score.usable && !right_score.usable {
-            let left_reset = left_score.reset_at.unwrap_or(i64::MAX);
-            let right_reset = right_score.reset_at.unwrap_or(i64::MAX);
-            ordering = left_reset.cmp(&right_reset);
-            if ordering != Ordering::Equal {
-                return ordering;
-            }
-        }
-        ordering = right_ts.cmp(left_ts);
-        if ordering != Ordering::Equal {
-            return ordering;
-        }
-        left_id.cmp(right_id)
-    });
-    ordered
-}
-
-fn usage_sort_scores(
-    snapshot: &Snapshot,
-    ctx: &ListCtx,
-    current_saved_id: Option<&str>,
-) -> HashMap<String, UsageSortKey> {
-    let Some(base_url) = ctx.base_url.as_deref() else {
-        return HashMap::new();
-    };
-    let now = ctx.now;
-    let ids: Vec<String> = snapshot.usage_map.keys().cloned().collect();
-    let build = |id: &String| {
-        if current_saved_id == Some(id.as_str()) {
-            return (id.clone(), UsageSortKey::default());
-        }
-        let key = usage_sort_key_for_profile(id, snapshot, base_url, now).unwrap_or_default();
-        (id.clone(), key)
-    };
-    let mut scores = HashMap::with_capacity(ids.len());
-    if ids.len() > MAX_USAGE_CONCURRENCY {
-        for chunk in ids.chunks(MAX_USAGE_CONCURRENCY) {
-            let chunk_scores: Vec<(String, UsageSortKey)> = chunk.par_iter().map(build).collect();
-            for (id, key) in chunk_scores {
-                scores.insert(id, key);
-            }
-        }
-        return scores;
-    }
-    let entries: Vec<(String, UsageSortKey)> = ids.par_iter().map(build).collect();
-    for (id, key) in entries {
-        scores.insert(id, key);
-    }
-    scores
-}
-
-fn usage_sort_key_for_profile(
-    id: &str,
-    snapshot: &Snapshot,
-    base_url: &str,
-    now: DateTime<Local>,
-) -> Option<UsageSortKey> {
-    if profile_is_api_key(id, snapshot) || profile_is_free(id, snapshot) {
-        return None;
-    }
-    let tokens = snapshot
-        .tokens
-        .get(id)
-        .and_then(|result| result.as_ref().ok())?;
-    let access_token = tokens.access_token.as_deref()?;
-    let account_id = token_account_id(tokens)?;
-    let limits = fetch_usage_limits(base_url, access_token, account_id, now).ok()?;
-    let five_hour_left = usage_left_percent(limits.five_hour.as_ref())?;
-    let secondary_left = usage_left_percent(limits.weekly.as_ref());
-    let primary_left = five_hour_left;
-    let secondary_left_value = secondary_left.unwrap_or(0);
-    let primary_reset = usage_reset_at(limits.five_hour.as_ref());
-    let secondary_reset = usage_reset_at(limits.weekly.as_ref());
-    let reset_at = if primary_left <= 0 && secondary_left_value <= 0 {
-        match (primary_reset, secondary_reset) {
-            (Some(primary), Some(secondary)) => Some(primary.max(secondary)),
-            (Some(primary), None) => Some(primary),
-            (None, Some(secondary)) => Some(secondary),
-            (None, None) => None,
-        }
-    } else if primary_left <= 0 {
-        primary_reset
-    } else if secondary_left_value <= 0 {
-        secondary_reset
-    } else {
-        None
-    };
-    let usable = primary_left > 0 && secondary_left_value > 0;
-    Some(UsageSortKey {
-        five_hour_left: Some(five_hour_left),
-        secondary_left,
-        reset_at,
-        usable,
-    })
-}
-
-fn usage_left_percent(window: Option<&UsageWindow>) -> Option<i64> {
-    window.map(|value| value.left_percent.round() as i64)
-}
-
-fn usage_reset_at(window: Option<&UsageWindow>) -> Option<i64> {
-    window.map(|value| value.reset_at)
-}
-
-fn profile_is_api_key(id: &str, snapshot: &Snapshot) -> bool {
-    snapshot
-        .tokens
-        .get(id)
-        .and_then(|result| result.as_ref().ok())
-        .map(is_api_key_profile)
-        .or_else(|| {
-            snapshot
-                .index
-                .profiles
-                .get(id)
-                .map(|entry| entry.is_api_key)
-        })
-        .unwrap_or(false)
-}
-
-fn profile_is_free(id: &str, snapshot: &Snapshot) -> bool {
-    let plan = profile_plan_for_sort(id, snapshot);
-    is_free_plan(plan.as_deref())
-}
-
-fn profile_plan_for_sort(id: &str, snapshot: &Snapshot) -> Option<String> {
-    if let Some(tokens) = snapshot
-        .tokens
-        .get(id)
-        .and_then(|result| result.as_ref().ok())
-    {
-        let (_, plan) = extract_email_and_plan(tokens);
-        if plan.is_some() {
-            return plan;
-        }
-    }
-    snapshot
-        .index
-        .profiles
-        .get(id)
-        .and_then(|entry| entry.plan.clone())
-}
 
 pub fn save_profile(paths: &Paths, label: Option<String>) -> Result<(), String> {
     let use_color = use_color_stdout();
@@ -268,7 +79,6 @@ pub fn save_profile(paths: &Paths, label: Option<String>) -> Result<(), String> 
         Some(&tokens),
         label_display.clone(),
         now,
-        true,
     );
     store.save(paths)?;
 
@@ -349,14 +159,7 @@ pub fn load_profile(paths: &Paths, label: Option<String>) -> Result<(), String> 
         .tokens
         .get(&selected_id)
         .and_then(|result| result.as_ref().ok());
-    update_profiles_index_entry(
-        &mut store.profiles_index,
-        &selected_id,
-        tokens,
-        label,
-        now,
-        true,
-    );
+    update_profiles_index_entry(&mut store.profiles_index, &selected_id, tokens, label, now);
     store.save(paths)?;
 
     let message = format_action(
@@ -404,14 +207,6 @@ pub fn delete_profile(paths: &Paths, yes: bool, label: Option<String>) -> Result
         store.usage_map.remove(selected);
         remove_labels_for_id(&mut store.labels, selected);
         store.profiles_index.profiles.remove(selected);
-        if store
-            .profiles_index
-            .active_profile_id
-            .as_deref()
-            .is_some_and(|id| id == selected)
-        {
-            store.profiles_index.active_profile_id = None;
-        }
     }
     store.save(paths)?;
 
@@ -425,28 +220,13 @@ pub fn delete_profile(paths: &Paths, yes: bool, label: Option<String>) -> Result
     Ok(())
 }
 
-pub fn list_profiles(
-    paths: &Paths,
-    show_usage: bool,
-    show_last_used: bool,
-    allow_plain_spacing: bool,
-    frame_with_separator: bool,
-) -> Result<(), String> {
+pub fn list_profiles(paths: &Paths) -> Result<(), String> {
     let snapshot = load_snapshot(paths, false)?;
     let usage_map = &snapshot.usage_map;
     let current_saved_id = current_saved_id(paths, usage_map, &snapshot.tokens);
-    let mut ctx = ListCtx::new(paths, show_usage);
-    let mut spinner = None;
-    if show_usage {
-        spinner = Some(start_usage_spinner(PROFILE_SPINNER_LOADING_PROFILES));
-        ctx.show_spinner = false;
-    }
+    let ctx = ListCtx::new(paths, false);
 
-    let ordered = if show_usage {
-        ordered_profiles_by_usage(&snapshot, &ctx, current_saved_id.as_deref())
-    } else {
-        ordered_profiles(usage_map)
-    };
+    let ordered = ordered_profiles(usage_map);
     let current_entry = make_current(
         paths,
         current_saved_id.as_deref(),
@@ -455,19 +235,10 @@ pub fn list_profiles(
         &snapshot.usage_map,
         &ctx,
     );
-    let separator = separator_line(2);
-    let frame_separator = if frame_with_separator {
-        separator_line(0)
-    } else {
-        None
-    };
     let has_saved = !ordered.is_empty();
     if !has_saved {
-        if let Some(spinner) = spinner {
-            stop_usage_spinner(spinner);
-        }
         if let Some(entry) = current_entry {
-            let lines = render_entries(&[entry], show_last_used, &ctx, None, false);
+            let lines = render_entries(&[entry], &ctx, false);
             print_output_block(&lines.join("\n"));
         } else {
             let message = format_no_profiles(paths, ctx.use_color);
@@ -482,45 +253,22 @@ pub fn list_profiles(
         .collect();
     let list_entries = make_entries(&filtered, &snapshot, None, &ctx);
 
-    if let Some(spinner) = spinner {
-        stop_usage_spinner(spinner);
-    }
-
     let mut lines = Vec::new();
     if let Some(entry) = current_entry {
-        lines.extend(render_entries(
-            &[entry],
-            show_last_used,
-            &ctx,
-            separator.as_deref(),
-            allow_plain_spacing,
-        ));
+        lines.extend(render_entries(&[entry], &ctx, false));
         if !list_entries.is_empty() {
-            push_separator(&mut lines, separator.as_deref(), allow_plain_spacing);
+            push_separator(&mut lines, false);
         }
     }
-    lines.extend(render_entries(
-        &list_entries,
-        show_last_used,
-        &ctx,
-        separator.as_deref(),
-        allow_plain_spacing,
-    ));
+    lines.extend(render_entries(&list_entries, &ctx, false));
     let output = lines.join("\n");
-    if frame_with_separator
-        && !is_plain()
-        && let Some(frame_separator) = frame_separator.as_ref()
-    {
-        print_output_block_with_frame(&output, frame_separator);
-        return Ok(());
-    }
     print_output_block(&output);
     Ok(())
 }
 
-pub fn status_profiles(paths: &Paths, all: bool) -> Result<(), String> {
+pub fn status_profiles(paths: &Paths, all: bool, show_errors: bool) -> Result<(), String> {
     if all {
-        return list_profiles(paths, true, true, true, true);
+        return status_all_profiles(paths, show_errors);
     }
     let snapshot = load_snapshot(paths, false).ok();
     let current_saved_id = snapshot
@@ -554,12 +302,109 @@ pub fn status_profiles(paths: &Paths, all: bool) -> Result<(), String> {
     );
     stop_usage_spinner(spinner);
     if let Some(entry) = current_entry {
-        let lines = render_entries(&[entry], true, &ctx, None, false);
+        let lines = render_entries(&[entry], &ctx, false);
         print_output_block(&lines.join("\n"));
     } else {
         let message = format_no_profiles(paths, ctx.use_color);
         print_output_block(&message);
     }
+    Ok(())
+}
+
+fn status_all_profiles(paths: &Paths, show_errors: bool) -> Result<(), String> {
+    let snapshot = load_snapshot(paths, false)?;
+    let usage_map = &snapshot.usage_map;
+    let current_saved_id = current_saved_id(paths, usage_map, &snapshot.tokens);
+    let mut ctx = ListCtx::new(paths, true);
+    let spinner = start_usage_spinner(PROFILE_SPINNER_LOADING_PROFILES);
+    ctx.show_spinner = false;
+
+    let ordered = ordered_profiles(&snapshot.usage_map);
+    let current_entry = make_current(
+        paths,
+        current_saved_id.as_deref(),
+        &snapshot.labels,
+        &snapshot.tokens,
+        &snapshot.usage_map,
+        &ctx,
+    );
+    let filtered: Vec<(String, u64)> = ordered
+        .into_iter()
+        .filter(|(id, _)| current_saved_id.as_deref() != Some(id.as_str()))
+        .collect();
+
+    let mut hidden_api_count = 0usize;
+    let mut hidden_error_count = 0usize;
+    let mut list_entries = Vec::new();
+    for (id, ts) in filtered {
+        if is_api_saved_profile(&id, &snapshot) {
+            hidden_api_count += 1;
+            continue;
+        }
+        let entry = make_saved(&id, ts, &snapshot, None, &ctx);
+        if !show_errors && entry.error_summary.is_some() {
+            hidden_error_count += 1;
+            continue;
+        }
+        list_entries.push(entry);
+    }
+
+    let mut current_visible = None;
+    if let Some(entry) = current_entry {
+        let current_is_api = read_tokens_opt(&paths.auth)
+            .map(|tokens| is_api_key_profile(&tokens))
+            .unwrap_or(false);
+        if current_is_api {
+            hidden_api_count += 1;
+        } else if !show_errors && entry.error_summary.is_some() {
+            hidden_error_count += 1;
+        } else {
+            current_visible = Some(entry);
+        }
+    }
+
+    stop_usage_spinner(spinner);
+
+    if current_visible.is_none()
+        && list_entries.is_empty()
+        && hidden_api_count == 0
+        && hidden_error_count == 0
+    {
+        let message = format_no_profiles(paths, ctx.use_color);
+        print_output_block(&message);
+        return Ok(());
+    }
+
+    let mut lines = Vec::new();
+    if let Some(entry) = current_visible {
+        lines.extend(render_entries(&[entry], &ctx, true));
+        if !list_entries.is_empty() || hidden_api_count > 0 || hidden_error_count > 0 {
+            push_separator(&mut lines, true);
+        }
+    }
+
+    if !list_entries.is_empty() {
+        lines.extend(render_entries(&list_entries, &ctx, true));
+        if hidden_api_count > 0 || hidden_error_count > 0 {
+            push_separator(&mut lines, true);
+        }
+    }
+
+    if hidden_api_count > 0 {
+        let hidden_message = crate::msg1(PROFILE_STATUS_API_HIDDEN, hidden_api_count);
+        lines.push(style_text(&hidden_message, ctx.use_color, |text| {
+            text.dimmed().italic()
+        }));
+    }
+    if hidden_error_count > 0 {
+        let hidden_message = crate::msg1(PROFILE_STATUS_ERROR_HIDDEN, hidden_error_count);
+        lines.push(style_text(&hidden_message, ctx.use_color, |text| {
+            text.dimmed().italic()
+        }));
+    }
+
+    let output = lines.join("\n");
+    print_output_block(&output);
     Ok(())
 }
 
@@ -570,22 +415,10 @@ pub fn status_label(paths: &Paths, label: &str) -> Result<(), String> {
     let mut ctx = ListCtx::new(paths, true);
     let spinner = start_usage_spinner(PROFILE_SPINNER_LOADING_PROFILE);
     ctx.show_spinner = false;
-    let separator = separator_line(2);
     let is_current = current_saved_id.as_deref() == Some(id.as_str());
-    let last_used = if is_current {
-        String::new()
-    } else {
-        snapshot
-            .usage_map
-            .get(&id)
-            .copied()
-            .map(format_last_used)
-            .unwrap_or_default()
-    };
     let label = label_for_id(&snapshot.labels, &id);
     let profile_path = ctx.profiles_dir.join(format!("{id}.json"));
     let entry = make_entry(
-        last_used,
         label,
         snapshot.tokens.get(&id),
         snapshot.index.profiles.get(&id),
@@ -594,27 +427,8 @@ pub fn status_label(paths: &Paths, label: &str) -> Result<(), String> {
         is_current,
     );
     stop_usage_spinner(spinner);
-    let lines = render_entries(&[entry], true, &ctx, separator.as_deref(), true);
+    let lines = render_entries(&[entry], &ctx, true);
     print_output_block(&lines.join("\n"));
-    Ok(())
-}
-
-pub fn sync_current_readonly(paths: &Paths) -> Result<(), String> {
-    if !paths.auth.is_file() {
-        return Ok(());
-    }
-    let snapshot = match load_snapshot(paths, false) {
-        Ok(snapshot) => snapshot,
-        Err(_) => return Ok(()),
-    };
-    let Some(id) = current_saved_id(paths, &snapshot.usage_map, &snapshot.tokens) else {
-        return Ok(());
-    };
-    let target = profile_path_for_id(&paths.profiles, &id);
-    if !target.is_file() {
-        return Ok(());
-    }
-    sync_profile(paths, &target)?;
     Ok(())
 }
 
@@ -627,8 +441,6 @@ pub(crate) struct ProfilesIndex {
     #[serde(default = "profiles_index_version")]
     version: u8,
     #[serde(default)]
-    active_profile_id: Option<String>,
-    #[serde(default)]
     profiles: BTreeMap<String, ProfileIndexEntry>,
     #[serde(default)]
     pub(crate) update_cache: Option<UpdateCache>,
@@ -638,7 +450,6 @@ impl Default for ProfilesIndex {
     fn default() -> Self {
         Self {
             version: PROFILES_INDEX_VERSION,
-            active_profile_id: None,
             profiles: BTreeMap::new(),
             update_cache: None,
         }
@@ -657,8 +468,6 @@ struct ProfileIndexEntry {
     label: Option<String>,
     #[serde(default)]
     added_at: u64,
-    #[serde(default)]
-    last_used: Option<u64>,
     #[serde(default)]
     is_api_key: bool,
     #[serde(default)]
@@ -695,6 +504,8 @@ pub(crate) fn read_profiles_index(paths: &Paths) -> Result<ProfilesIndex, String
     }
     let contents = fs::read_to_string(&paths.profiles_index)
         .map_err(|err| crate::msg2(PROFILE_ERR_READ_INDEX, paths.profiles_index.display(), err))?;
+    let had_legacy_schema =
+        contents.contains("\"last_used\"") || contents.contains("\"active_profile_id\"");
     let mut index: ProfilesIndex = serde_json::from_str(&contents).map_err(|_| {
         crate::msg1(
             PROFILE_ERR_INDEX_INVALID_JSON,
@@ -703,6 +514,9 @@ pub(crate) fn read_profiles_index(paths: &Paths) -> Result<ProfilesIndex, String
     })?;
     if index.version < PROFILES_INDEX_VERSION {
         index.version = PROFILES_INDEX_VERSION;
+    }
+    if had_legacy_schema {
+        let _ = write_profiles_index(paths, &index);
     }
     Ok(index)
 }
@@ -729,23 +543,11 @@ pub(crate) fn write_profiles_index(paths: &Paths, index: &ProfilesIndex) -> Resu
 fn prune_profiles_index(index: &mut ProfilesIndex, profiles_dir: &Path) -> Result<(), String> {
     let ids = collect_profile_ids(profiles_dir)?;
     index.profiles.retain(|id, _| ids.contains(id));
-    if index
-        .active_profile_id
-        .as_deref()
-        .is_some_and(|id| !ids.contains(id))
-    {
-        index.active_profile_id = None;
-    }
     Ok(())
 }
 
-fn sync_profiles_index(
-    index: &mut ProfilesIndex,
-    usage_map: &BTreeMap<String, u64>,
-    labels: &Labels,
-) {
+fn sync_profiles_index(index: &mut ProfilesIndex, labels: &Labels) {
     for (id, entry) in index.profiles.iter_mut() {
-        entry.last_used = usage_map.get(id).copied();
         entry.label = label_for_id(labels, id);
     }
 }
@@ -765,22 +567,10 @@ fn labels_from_index(index: &ProfilesIndex) -> Labels {
     labels
 }
 
-fn usage_map_from_index(index: &ProfilesIndex, ids: &HashSet<String>) -> BTreeMap<String, u64> {
+fn usage_map_from_index(_index: &ProfilesIndex, ids: &HashSet<String>) -> BTreeMap<String, u64> {
     let mut usage_map = BTreeMap::new();
     for id in ids {
         usage_map.insert(id.clone(), 0);
-    }
-    for (id, entry) in &index.profiles {
-        if !ids.contains(id) {
-            continue;
-        }
-        let Some(last_used) = entry.last_used else {
-            continue;
-        };
-        let current = usage_map.entry(id.clone()).or_insert(0);
-        if last_used > *current {
-            *current = last_used;
-        }
     }
     usage_map
 }
@@ -791,7 +581,6 @@ fn update_profiles_index_entry(
     tokens: Option<&Tokens>,
     label: Option<String>,
     now: u64,
-    set_active: bool,
 ) {
     let entry = index.profiles.entry(id.to_string()).or_default();
     if entry.added_at == 0 {
@@ -811,10 +600,6 @@ fn update_profiles_index_entry(
     }
     if let Some(label) = label {
         entry.label = Some(label);
-    }
-    entry.last_used = Some(now);
-    if set_active {
-        index.active_profile_id = Some(id.to_string());
     }
 }
 
@@ -956,13 +741,6 @@ pub fn load_profile_tokens_map(
         let mut index = read_profiles_index_relaxed(paths);
         for id in &removed_ids {
             index.profiles.remove(id);
-            if index
-                .active_profile_id
-                .as_deref()
-                .is_some_and(|active| active == id)
-            {
-                index.active_profile_id = None;
-            }
         }
         let _ = write_profiles_index(paths, &index);
     }
@@ -1228,13 +1006,6 @@ fn rename_profile_id(
     if let Some(entry) = profiles_index.profiles.remove(from) {
         profiles_index.profiles.insert(desired.clone(), entry);
     }
-    if profiles_index
-        .active_profile_id
-        .as_deref()
-        .is_some_and(|id| id == from)
-    {
-        profiles_index.active_profile_id = Some(desired.clone());
-    }
     Ok(desired)
 }
 
@@ -1263,7 +1034,7 @@ pub(crate) fn sync_current(
     let now = now_seconds();
     map.insert(id.clone(), now);
     let label = label_for_id(labels, &id);
-    update_profiles_index_entry(index, &id, Some(&tokens), label, now, true);
+    update_profiles_index_entry(index, &id, Some(&tokens), label, now);
     Ok(())
 }
 
@@ -1353,7 +1124,7 @@ impl ProfileStore {
     pub(crate) fn save(&mut self, paths: &Paths) -> Result<(), String> {
         prune_labels(&mut self.labels, &paths.profiles);
         prune_profiles_index(&mut self.profiles_index, &paths.profiles)?;
-        sync_profiles_index(&mut self.profiles_index, &self.usage_map, &self.labels);
+        sync_profiles_index(&mut self.profiles_index, &self.labels);
         write_profiles_index(paths, &self.profiles_index)?;
         Ok(())
     }
@@ -1517,7 +1288,7 @@ pub(crate) fn build_candidates(
 ) -> Vec<Candidate> {
     let mut candidates = Vec::with_capacity(ordered.len());
     let use_color = use_color_stderr();
-    for (id, ts) in ordered {
+    for (id, _ts) in ordered {
         let label = label_for_id(&snapshot.labels, id);
         let tokens = snapshot
             .tokens
@@ -1526,16 +1297,9 @@ pub(crate) fn build_candidates(
         let index_entry = snapshot.index.profiles.get(id);
         let is_current = current_saved_id == Some(id.as_str());
         let info = profile_info_with_fallback(tokens, index_entry, label, is_current, use_color);
-        let last_used = if is_current {
-            String::new()
-        } else {
-            format_last_used(*ts)
-        };
         candidates.push(Candidate {
             id: id.clone(),
             display: info.display,
-            last_used,
-            is_current,
         });
     }
     candidates
@@ -1644,37 +1408,19 @@ fn confirm_delete_profiles_with(
 pub(crate) struct Candidate {
     pub(crate) id: String,
     pub(crate) display: String,
-    pub(crate) last_used: String,
-    pub(crate) is_current: bool,
 }
 
 impl fmt::Display for Candidate {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let header = format_entry_header(
-            &self.display,
-            &self.last_used,
-            self.is_current,
-            use_color_stderr(),
-        );
+        let header = format_entry_header(&self.display, use_color_stderr());
         write!(f, "{header}")
     }
 }
 
-fn render_entries(
-    entries: &[Entry],
-    show_last_used: bool,
-    ctx: &ListCtx,
-    separator: Option<&str>,
-    allow_plain_spacing: bool,
-) -> Vec<String> {
+fn render_entries(entries: &[Entry], ctx: &ListCtx, allow_plain_spacing: bool) -> Vec<String> {
     let mut lines = Vec::with_capacity((entries.len().max(1)) * 4);
     for (idx, entry) in entries.iter().enumerate() {
-        let header = format_entry_header(
-            &entry.display,
-            if show_last_used { &entry.last_used } else { "" },
-            entry.is_current,
-            ctx.use_color,
-        );
+        let header = format_entry_header(&entry.display, ctx.use_color);
         let show_detail_lines = ctx.show_usage || entry.always_show_details;
         if !show_detail_lines {
             if let Some(err) = entry.error_summary.as_deref() {
@@ -1689,41 +1435,22 @@ fn render_entries(
             lines.extend(entry.details.iter().cloned());
         }
         if idx + 1 < entries.len() {
-            push_separator(&mut lines, separator, allow_plain_spacing);
+            push_separator(&mut lines, allow_plain_spacing);
         }
     }
     lines
 }
 
-fn push_separator(lines: &mut Vec<String>, separator: Option<&str>, allow_plain_spacing: bool) {
-    match separator {
-        Some(value) => lines.push(value.to_string()),
-        None => {
-            if !is_plain() || allow_plain_spacing {
-                lines.push(String::new());
-            }
-        }
+fn push_separator(lines: &mut Vec<String>, allow_plain_spacing: bool) {
+    if !is_plain() || allow_plain_spacing {
+        lines.push(String::new());
     }
-}
-
-fn separator_line(trim: usize) -> Option<String> {
-    if is_plain() {
-        return None;
-    }
-    let width = terminal_width()?;
-    let len = width.saturating_sub(trim);
-    if len == 0 {
-        return None;
-    }
-    let line = "-".repeat(len);
-    Some(style_text(&line, use_color_stdout(), |text| text.dimmed()))
 }
 
 fn make_error(
     label: Option<String>,
     index_entry: Option<&ProfileIndexEntry>,
     use_color: bool,
-    last_used: String,
     message: &str,
     summary_label: &str,
     is_current: bool,
@@ -1732,11 +1459,9 @@ fn make_error(
         profile_info_with_fallback(None, index_entry, label, is_current, use_color).display;
     Entry {
         display,
-        last_used,
         details: vec![format_error(message)],
         error_summary: Some(error_summary(summary_label, message)),
         always_show_details: false,
-        is_current,
     }
 }
 
@@ -1750,45 +1475,47 @@ fn detail_lines(
     plan: Option<&str>,
     profile_path: &Path,
     ctx: &ListCtx,
-    allow_401_refresh: bool,
-    suppress_usage: bool,
-) -> (Vec<String>, Option<String>) {
+) -> (Vec<String>, Option<String>, bool) {
     let use_color = ctx.use_color;
     let account_id = token_account_id(tokens).map(str::to_string);
     let access_token = tokens.access_token.clone();
     if is_api_key_profile(tokens) {
         if ctx.show_usage {
             return (
-                vec![style_text(USAGE_UNAVAILABLE_API_KEY, use_color, |text| {
-                    text.dimmed().italic()
-                })],
+                vec![format_error(&crate::msg2(
+                    UI_ERROR_TWO_LINE,
+                    USAGE_UNAVAILABLE_API_KEY_TITLE,
+                    USAGE_UNAVAILABLE_API_KEY_DETAIL,
+                ))],
                 None,
+                false,
             );
         }
-        return (Vec::new(), None);
+        return (Vec::new(), None, false);
     }
     let unavailable_text = usage_unavailable();
     if let Some(message) = profile_error(tokens, email, plan) {
         let missing_access = access_token.is_none() || account_id.is_none();
-        if ctx.show_usage && missing_access && email.is_some() && plan.is_some() {
-            return (unavailable_lines(unavailable_text, use_color), None);
+        let missing_identity_only =
+            message == AUTH_ERR_PROFILE_MISSING_EMAIL_PLAN && !missing_access;
+        if !missing_identity_only {
+            if ctx.show_usage && missing_access && email.is_some() && plan.is_some() {
+                return (unavailable_lines(unavailable_text, use_color), None, false);
+            }
+            let details = vec![format_error(message)];
+            let summary = Some(error_summary(PROFILE_SUMMARY_ERROR, message));
+            return (details, summary, false);
         }
-        let details = vec![format_error(message)];
-        let summary = Some(error_summary(PROFILE_SUMMARY_ERROR, message));
-        return (details, summary);
     }
     if ctx.show_usage {
-        if suppress_usage {
-            return (Vec::new(), None);
-        }
         let Some(base_url) = ctx.base_url.as_deref() else {
-            return (Vec::new(), None);
+            return (Vec::new(), None, false);
         };
         let Some(access_token) = access_token.as_deref() else {
-            return (Vec::new(), None);
+            return (Vec::new(), None, false);
         };
         let Some(account_id) = account_id.as_deref() else {
-            return (Vec::new(), None);
+            return (Vec::new(), None, false);
         };
         match fetch_usage_details(
             base_url,
@@ -1798,8 +1525,8 @@ fn detail_lines(
             ctx.now,
             ctx.show_spinner,
         ) {
-            Ok(details) => (details, None),
-            Err(err) if allow_401_refresh && err.status_code() == Some(401) => {
+            Ok(details) => (details, None, false),
+            Err(err) if err.status_code() == Some(401) => {
                 match refresh_profile_tokens(profile_path, tokens) {
                     Ok(()) => {
                         let Some(access_token) = tokens.access_token.as_deref() else {
@@ -1807,6 +1534,7 @@ fn detail_lines(
                             return (
                                 vec![format_error(message)],
                                 Some(error_summary(PROFILE_SUMMARY_AUTH_ERROR, message)),
+                                true,
                             );
                         };
                         match fetch_usage_details(
@@ -1817,95 +1545,39 @@ fn detail_lines(
                             ctx.now,
                             ctx.show_spinner,
                         ) {
-                            Ok(details) => (details, None),
+                            Ok(details) => (details, None, true),
                             Err(err) => (
                                 vec![format_error(&err.message())],
                                 Some(error_summary(PROFILE_SUMMARY_USAGE_ERROR, &err.message())),
+                                true,
                             ),
                         }
                     }
                     Err(err) => (
                         vec![format_error(&err)],
                         Some(error_summary(PROFILE_SUMMARY_AUTH_ERROR, &err)),
+                        false,
                     ),
                 }
             }
             Err(err) => (
                 vec![format_error(&err.message())],
                 Some(error_summary(PROFILE_SUMMARY_USAGE_ERROR, &err.message())),
+                false,
             ),
         }
     } else {
-        (Vec::new(), None)
+        (Vec::new(), None, false)
     }
 }
 
-enum RefreshAttempt {
-    Skipped,
-    Succeeded,
-    Failed {
-        message: String,
-        suppress_usage: bool,
-    },
-}
-
-impl RefreshAttempt {
-    fn allow_usage_401_retry(&self) -> bool {
-        matches!(self, Self::Skipped)
-    }
-
-    fn suppress_usage(&self) -> bool {
-        matches!(
-            self,
-            Self::Failed {
-                suppress_usage: true,
-                ..
-            }
-        )
-    }
-
-    fn failed_message(&self) -> Option<&str> {
-        match self {
-            Self::Failed { message, .. } => Some(message),
-            _ => None,
-        }
-    }
-}
-
-fn refresh_for_status(tokens: &mut Tokens, profile_path: &Path, ctx: &ListCtx) -> RefreshAttempt {
-    if !ctx.show_usage {
-        return RefreshAttempt::Skipped;
-    }
-    if is_api_key_profile(tokens) {
-        return RefreshAttempt::Skipped;
-    }
-    let has_refresh = tokens
-        .refresh_token
-        .as_deref()
-        .map(|value| !value.is_empty())
-        .unwrap_or(false);
-    if !has_refresh {
-        return RefreshAttempt::Failed {
-            message: AUTH_ERR_PROFILE_NO_REFRESH_TOKEN.to_string(),
-            suppress_usage: false,
-        };
-    }
-    match refresh_profile_tokens(profile_path, tokens) {
-        Ok(()) => RefreshAttempt::Succeeded,
-        Err(err) => RefreshAttempt::Failed {
-            suppress_usage: is_http_401_message(&err),
-            message: err,
-        },
-    }
-}
-
+#[cfg(test)]
 fn is_http_401_message(message: &str) -> bool {
     let message = message.to_ascii_lowercase();
     message.contains("(401)") || message.contains("unauthorized")
 }
 
 fn make_entry(
-    last_used: String,
     label: Option<String>,
     tokens_result: Option<&Result<Tokens, String>>,
     index_entry: Option<&ProfileIndexEntry>,
@@ -1922,7 +1594,6 @@ fn make_entry(
                 label_for_error,
                 index_entry,
                 use_color,
-                last_used,
                 err,
                 PROFILE_SUMMARY_ERROR,
                 is_current,
@@ -1933,45 +1604,31 @@ fn make_entry(
                 label_for_error,
                 index_entry,
                 use_color,
-                last_used,
                 PROFILE_SUMMARY_FILE_MISSING,
                 PROFILE_SUMMARY_ERROR,
                 is_current,
             );
         }
     };
-    let refresh_attempt = refresh_for_status(&mut tokens, profile_path, ctx);
     let info = profile_info(Some(&tokens), label, is_current, use_color);
-    let allow_401_refresh = refresh_attempt.allow_usage_401_retry();
-    let suppress_usage = refresh_attempt.suppress_usage();
-    let (mut details, mut summary) = detail_lines(
+    let (details, summary, _) = detail_lines(
         &mut tokens,
         info.email.as_deref(),
         info.plan.as_deref(),
         profile_path,
         ctx,
-        allow_401_refresh,
-        suppress_usage,
     );
-    if let Some(err) = refresh_attempt.failed_message() {
-        details.insert(0, format_error(err));
-        if summary.is_none() {
-            summary = Some(error_summary(PROFILE_SUMMARY_AUTH_REFRESH, err));
-        }
-    }
     Entry {
         display: info.display,
-        last_used,
         details,
         error_summary: summary,
         always_show_details: info.is_free,
-        is_current,
     }
 }
 
 fn make_saved(
     id: &str,
-    ts: u64,
+    _ts: u64,
     snapshot: &Snapshot,
     current_saved_id: Option<&str>,
     ctx: &ListCtx,
@@ -1979,13 +1636,7 @@ fn make_saved(
     let profile_path = ctx.profiles_dir.join(format!("{id}.json"));
     let label = label_for_id(&snapshot.labels, id);
     let is_current = current_saved_id == Some(id);
-    let last_used = if is_current {
-        String::new()
-    } else {
-        format_last_used(ts)
-    };
     make_entry(
-        last_used,
         label,
         snapshot.tokens.get(id),
         snapshot.index.profiles.get(id),
@@ -2017,6 +1668,20 @@ fn make_entries(
     ordered.iter().map(build).collect()
 }
 
+fn is_api_saved_profile(id: &str, snapshot: &Snapshot) -> bool {
+    if let Some(Ok(tokens)) = snapshot.tokens.get(id)
+        && is_api_key_profile(tokens)
+    {
+        return true;
+    }
+    snapshot
+        .index
+        .profiles
+        .get(id)
+        .map(|entry| entry.is_api_key)
+        .unwrap_or(false)
+}
+
 fn make_current(
     paths: &Paths,
     current_saved_id: Option<&str>,
@@ -2035,56 +1700,38 @@ fn make_current(
                 None,
                 None,
                 ctx.use_color,
-                String::new(),
                 &err,
                 PROFILE_SUMMARY_ERROR,
                 true,
             ));
         }
     };
-    let refresh_attempt = refresh_for_status(&mut tokens, &ctx.auth_path, ctx);
-    let refreshed_saved_id =
-        if matches!(refresh_attempt, RefreshAttempt::Succeeded) || current_saved_id.is_none() {
-            extract_profile_identity(&tokens).and_then(|identity| {
-                let candidates = cached_profile_ids(tokens_map, &identity);
-                pick_primary(&candidates, usage_map)
-            })
-        } else {
-            None
-        };
-    let effective_saved_id = refreshed_saved_id.as_deref().or(current_saved_id);
-    if matches!(refresh_attempt, RefreshAttempt::Succeeded)
-        && let Some(id) = effective_saved_id
-    {
-        let profile_path = ctx.profiles_dir.join(format!("{id}.json"));
-        if profile_path.is_file()
-            && let Err(err) = copy_atomic(&ctx.auth_path, &profile_path)
-        {
-            let warning = format_warning(&normalize_error(&err), use_color_stderr());
-            eprintln!("{warning}");
-        }
-    }
+    let resolved_saved_id = extract_profile_identity(&tokens).and_then(|identity| {
+        let candidates = cached_profile_ids(tokens_map, &identity);
+        pick_primary(&candidates, usage_map)
+    });
+    let effective_saved_id = current_saved_id.or(resolved_saved_id.as_deref());
     let label = effective_saved_id.and_then(|id| label_for_id(labels, id));
     let use_color = ctx.use_color;
     let info = profile_info(Some(&tokens), label, true, use_color);
     let plan_is_free = info.is_free;
     let can_save = is_profile_ready(&tokens);
     let is_unsaved = effective_saved_id.is_none() && can_save;
-    let allow_401_refresh = refresh_attempt.allow_usage_401_retry();
-    let suppress_usage = refresh_attempt.suppress_usage();
-    let (mut details, mut summary) = detail_lines(
+    let (mut details, summary, refreshed) = detail_lines(
         &mut tokens,
         info.email.as_deref(),
         info.plan.as_deref(),
         &ctx.auth_path,
         ctx,
-        allow_401_refresh,
-        suppress_usage,
     );
-    if let Some(err) = refresh_attempt.failed_message() {
-        details.insert(0, format_error(err));
-        if summary.is_none() {
-            summary = Some(error_summary(PROFILE_SUMMARY_AUTH_REFRESH, err));
+
+    if refreshed && let Some(id) = effective_saved_id {
+        let profile_path = ctx.profiles_dir.join(format!("{id}.json"));
+        if profile_path.is_file()
+            && let Err(err) = copy_atomic(&ctx.auth_path, &profile_path)
+        {
+            let warning = format_warning(&normalize_error(&err), use_color_stderr());
+            eprintln!("{warning}");
         }
     }
 
@@ -2094,11 +1741,9 @@ fn make_current(
 
     Some(Entry {
         display: info.display,
-        last_used: String::new(),
         details,
         error_summary: summary,
         always_show_details: is_unsaved || (plan_is_free && !ctx.show_usage),
-        is_current: true,
     })
 }
 
@@ -2132,11 +1777,9 @@ impl ListCtx {
 
 struct Entry {
     display: String,
-    last_used: String,
     details: Vec<String>,
     error_summary: Option<String>,
     always_show_details: bool,
-    is_current: bool,
 }
 
 fn handle_inquire_result<T>(
@@ -2349,10 +1992,7 @@ mod tests {
     fn profiles_index_roundtrip() {
         let dir = tempfile::tempdir().expect("tempdir");
         let paths = make_paths(dir.path());
-        let mut index = ProfilesIndex {
-            active_profile_id: Some("id".to_string()),
-            ..ProfilesIndex::default()
-        };
+        let mut index = ProfilesIndex::default();
         index.profiles.insert(
             "id".to_string(),
             ProfileIndexEntry {
@@ -2361,7 +2001,6 @@ mod tests {
                 plan: Some("Team".to_string()),
                 label: Some("work".to_string()),
                 added_at: 1,
-                last_used: Some(2),
                 is_api_key: false,
                 principal_id: Some("principal-1".to_string()),
                 workspace_or_org_id: Some("workspace-1".to_string()),
@@ -2371,13 +2010,11 @@ mod tests {
         write_profiles_index(&paths, &index).unwrap();
         let read_back = read_profiles_index(&paths).unwrap();
         let entry = read_back.profiles.get("id").unwrap();
-        assert_eq!(read_back.active_profile_id.as_deref(), Some("id"));
         assert_eq!(entry.account_id.as_deref(), Some("acct"));
         assert_eq!(entry.email.as_deref(), Some("me@example.com"));
         assert_eq!(entry.plan.as_deref(), Some("Team"));
         assert_eq!(entry.label.as_deref(), Some("work"));
         assert_eq!(entry.added_at, 1);
-        assert_eq!(entry.last_used, Some(2));
         assert!(!entry.is_api_key);
         assert_eq!(entry.principal_id.as_deref(), Some("principal-1"));
         assert_eq!(entry.workspace_or_org_id.as_deref(), Some("workspace-1"));
@@ -2389,16 +2026,12 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let paths = make_paths(dir.path());
         fs::create_dir_all(&paths.profiles).unwrap();
-        let mut index = ProfilesIndex {
-            active_profile_id: Some("missing".to_string()),
-            ..ProfilesIndex::default()
-        };
+        let mut index = ProfilesIndex::default();
         index
             .profiles
             .insert("missing".to_string(), ProfileIndexEntry::default());
         prune_profiles_index(&mut index, &paths.profiles).unwrap();
         assert!(index.profiles.is_empty());
-        assert!(index.active_profile_id.is_none());
     }
 
     #[test]
@@ -2514,11 +2147,9 @@ mod tests {
     fn render_helpers() {
         let entry = Entry {
             display: "Display".to_string(),
-            last_used: "".to_string(),
             details: vec!["detail".to_string()],
             error_summary: None,
             always_show_details: true,
-            is_current: false,
         };
         let ctx = ListCtx {
             base_url: None,
@@ -2529,9 +2160,9 @@ mod tests {
             profiles_dir: PathBuf::new(),
             auth_path: PathBuf::new(),
         };
-        let lines = render_entries(&[entry], true, &ctx, None, true);
+        let lines = render_entries(&[entry], &ctx, true);
         assert!(!lines.is_empty());
-        push_separator(&mut vec!["a".to_string()], None, true);
+        push_separator(&mut vec!["a".to_string()], true);
     }
 
     #[test]
@@ -2566,11 +2197,10 @@ mod tests {
         write_auth(&paths.auth, "acct", "a@b.com", "pro", "acc", "ref");
         crate::ensure_paths(&paths).unwrap();
         save_profile(&paths, Some("team".to_string())).unwrap();
-        list_profiles(&paths, false, false, false, false).unwrap();
-        status_profiles(&paths, false).unwrap();
+        list_profiles(&paths).unwrap();
+        status_profiles(&paths, false, false).unwrap();
         let label = read_labels(&paths).unwrap().keys().next().cloned().unwrap();
         status_label(&paths, &label).unwrap();
-        sync_current_readonly(&paths).unwrap();
     }
 
     #[test]

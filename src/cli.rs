@@ -28,13 +28,16 @@ pub enum Commands {
         #[arg(long)]
         label: Option<String>,
     },
-    /// List profiles ordered by last used
+    /// List saved profiles
     List,
     /// Show usage details for the current profile
     Status {
         /// Show usage for all saved profiles
         #[arg(long)]
         all: bool,
+        /// Include errored profiles in --all output
+        #[arg(long, requires = "all")]
+        show_errors: bool,
         /// Show usage for the profile matching this label
         #[arg(value_name = "label")]
         #[arg(long)]

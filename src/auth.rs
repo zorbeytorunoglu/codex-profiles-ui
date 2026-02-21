@@ -11,10 +11,11 @@ use crate::{
     AUTH_ERR_INVALID_JSON_RELOGIN, AUTH_ERR_INVALID_REFRESH_RESPONSE,
     AUTH_ERR_INVALID_TOKENS_OBJECT, AUTH_ERR_MISSING_TOKENS, AUTH_ERR_PROFILE_MISSING_ACCESS_TOKEN,
     AUTH_ERR_PROFILE_MISSING_ACCOUNT, AUTH_ERR_PROFILE_MISSING_EMAIL_PLAN,
-    AUTH_ERR_PROFILE_NO_REFRESH_TOKEN, AUTH_ERR_READ, AUTH_ERR_REFRESH_FAILED_CODE,
-    AUTH_ERR_REFRESH_FAILED_OTHER, AUTH_ERR_REFRESH_MISSING_ACCESS_TOKEN, AUTH_ERR_SERIALIZE_AUTH,
-    AUTH_ERR_WRITE_AUTH, AUTH_REFRESH_401_TITLE, AUTH_RELOGIN_AND_SAVE, UI_ERROR_TWO_LINE,
-    write_atomic,
+    AUTH_ERR_PROFILE_NO_REFRESH_TOKEN, AUTH_ERR_READ, AUTH_ERR_REFRESH_EXPIRED,
+    AUTH_ERR_REFRESH_FAILED_CODE, AUTH_ERR_REFRESH_FAILED_OTHER,
+    AUTH_ERR_REFRESH_MISSING_ACCESS_TOKEN, AUTH_ERR_REFRESH_REUSED, AUTH_ERR_REFRESH_REVOKED,
+    AUTH_ERR_REFRESH_UNKNOWN_401, AUTH_ERR_SERIALIZE_AUTH, AUTH_ERR_WRITE_AUTH,
+    AUTH_REFRESH_401_TITLE, AUTH_RELOGIN_AND_SAVE, UI_ERROR_TWO_LINE, write_atomic,
 };
 
 const API_KEY_PREFIX: &str = "api-key-";
@@ -418,25 +419,66 @@ fn refresh_access_token(refresh_token: &str) -> Result<RefreshResponse, String> 
         .unwrap_or_else(|_| REFRESH_TOKEN_URL.to_string());
     let config = ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(5)))
+        .http_status_as_error(false)
         .build();
     let agent: ureq::Agent = config.into();
     let response = agent
         .post(&endpoint)
         .header("Content-Type", "application/json")
         .send_json(&request)
-        .map_err(|err| match err {
-            ureq::Error::StatusCode(401) => crate::msg2(
-                UI_ERROR_TWO_LINE,
-                AUTH_REFRESH_401_TITLE,
-                AUTH_RELOGIN_AND_SAVE,
-            ),
-            ureq::Error::StatusCode(code) => crate::msg1(AUTH_ERR_REFRESH_FAILED_CODE, code),
-            other => crate::msg1(AUTH_ERR_REFRESH_FAILED_OTHER, other),
-        })?;
+        .map_err(|other| crate::msg1(AUTH_ERR_REFRESH_FAILED_OTHER, other))?;
+
+    let status = response.status();
+    if status == 401 {
+        let body = response.into_body().read_to_string().unwrap_or_default();
+        return Err(classify_refresh_unauthorized_message(&body));
+    }
+    if !status.is_success() {
+        return Err(crate::msg1(AUTH_ERR_REFRESH_FAILED_CODE, status));
+    }
+
     response
         .into_body()
         .read_json::<RefreshResponse>()
         .map_err(|err| crate::msg1(AUTH_ERR_INVALID_REFRESH_RESPONSE, err))
+}
+
+fn classify_refresh_unauthorized_message(body: &str) -> String {
+    match extract_refresh_error_code(body).as_deref() {
+        Some("refresh_token_expired") => AUTH_ERR_REFRESH_EXPIRED.to_string(),
+        Some("refresh_token_reused") => AUTH_ERR_REFRESH_REUSED.to_string(),
+        Some("refresh_token_invalidated") => AUTH_ERR_REFRESH_REVOKED.to_string(),
+        _ => {
+            if body.trim().is_empty() {
+                crate::msg2(
+                    UI_ERROR_TWO_LINE,
+                    AUTH_REFRESH_401_TITLE,
+                    AUTH_RELOGIN_AND_SAVE,
+                )
+            } else {
+                AUTH_ERR_REFRESH_UNKNOWN_401.to_string()
+            }
+        }
+    }
+}
+
+fn extract_refresh_error_code(body: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(body).ok()?;
+    if let Some(code) = value
+        .get("error")
+        .and_then(|error| error.get("code"))
+        .and_then(serde_json::Value::as_str)
+    {
+        return Some(code.to_ascii_lowercase());
+    }
+    if let Some(code) = value
+        .get("error")
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| value.get("code").and_then(serde_json::Value::as_str))
+    {
+        return Some(code.to_ascii_lowercase());
+    }
+    None
 }
 
 fn apply_refresh(tokens: &mut Tokens, refreshed: &RefreshResponse) -> Result<(), String> {
@@ -878,6 +920,46 @@ mod tests {
             let _env = set_env_guard(REFRESH_TOKEN_URL_OVERRIDE_ENV_VAR, Some(&err_url));
             let err = refresh_access_token("token").unwrap_err();
             assert!(err.contains("unauthorized"));
+        }
+
+        let expired_body = r#"{"error":{"code":"refresh_token_expired"}}"#;
+        let expired_resp = format!(
+            "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            expired_body.len(),
+            expired_body
+        );
+        let expired_url = spawn_server(expired_resp);
+        {
+            let _env = set_env_guard(REFRESH_TOKEN_URL_OVERRIDE_ENV_VAR, Some(&expired_url));
+            let err = refresh_access_token("token").unwrap_err();
+            assert!(err.contains("expired"));
+        }
+
+        let reused_body = r#"{"error":{"code":"refresh_token_reused"}}"#;
+        let reused_resp = format!(
+            "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            reused_body.len(),
+            reused_body
+        );
+        let reused_url = spawn_server(reused_resp);
+        {
+            let _env = set_env_guard(REFRESH_TOKEN_URL_OVERRIDE_ENV_VAR, Some(&reused_url));
+            let err = refresh_access_token("token").unwrap_err();
+            assert!(err.contains("Token refresh unauthorized (401)"));
+            assert!(err.contains("Authenticate again with `codex login`"));
+        }
+
+        let revoked_body = r#"{"error":{"code":"refresh_token_invalidated"}}"#;
+        let revoked_resp = format!(
+            "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            revoked_body.len(),
+            revoked_body
+        );
+        let revoked_url = spawn_server(revoked_resp);
+        {
+            let _env = set_env_guard(REFRESH_TOKEN_URL_OVERRIDE_ENV_VAR, Some(&revoked_url));
+            let err = refresh_access_token("token").unwrap_err();
+            assert!(err.contains("revoked"));
         }
     }
 

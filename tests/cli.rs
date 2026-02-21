@@ -116,9 +116,8 @@ impl TestEnv {
         fs::create_dir_all(self.profiles_dir()).expect("create profiles dir");
         let mut profiles = serde_json::Map::new();
         let label_map: std::collections::HashMap<_, _> = labels.iter().copied().collect();
-        for (id, last_used) in entries {
+        for (id, _last_used) in entries {
             let mut entry = serde_json::Map::new();
-            entry.insert("last_used".to_string(), serde_json::json!(last_used));
             entry.insert("added_at".to_string(), serde_json::json!(1));
             if let Some(label) = label_map.get(id) {
                 entry.insert("label".to_string(), serde_json::json!(label));
@@ -279,15 +278,22 @@ fn start_usage_server(
     body: &'static str,
     max_requests: usize,
 ) -> std::io::Result<(SocketAddr, thread::JoinHandle<()>)> {
-    let listener = TcpListener::bind("127.0.0.1:0")?;
-    listener.set_nonblocking(true)?;
-    let addr = listener.local_addr()?;
     let response = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
         body.len(),
         body
-    )
-    .into_bytes();
+    );
+    start_response_server(vec![response], max_requests)
+}
+
+fn start_response_server(
+    responses: Vec<String>,
+    max_requests: usize,
+) -> std::io::Result<(SocketAddr, thread::JoinHandle<()>)> {
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    listener.set_nonblocking(true)?;
+    let addr = listener.local_addr()?;
+    let responses: Vec<Vec<u8>> = responses.into_iter().map(String::into_bytes).collect();
     let handle = thread::spawn(move || {
         let mut handled = 0usize;
         let mut last_activity = Instant::now();
@@ -296,7 +302,11 @@ fn start_usage_server(
                 Ok((mut stream, _)) => {
                     let mut buf = [0u8; 1024];
                     let _ = stream.read(&mut buf);
-                    let _ = stream.write_all(&response);
+                    if responses.is_empty() {
+                        break;
+                    }
+                    let idx = handled.min(responses.len() - 1);
+                    let _ = stream.write_all(&responses[idx]);
                     handled += 1;
                     last_activity = Instant::now();
                     if handled >= max_requests {
@@ -324,14 +334,14 @@ fn assert_status_output(env: &TestEnv, args: &[&str], expected_profiles: &[&str]
         let output = env.run(args);
         assert_contains_all(&output, expected_profiles);
         if !output.contains("resets ") {
-            assert!(output.contains("Error: failed to "));
+            assert!(output.contains("Error:"));
         }
         let _ = handle.join();
     } else {
         env.write_config("http://127.0.0.1:1/backend-api");
         let output = env.run(args);
         assert_contains_all(&output, expected_profiles);
-        assert!(output.contains("Error: failed to fetch usage"));
+        assert!(output.contains("Error:"));
     }
 }
 
@@ -354,6 +364,44 @@ fn assert_order(output: &str, first: &str, second: &str) {
     );
 }
 
+fn write_profile_tokens(env: &TestEnv, id: &str, tokens: serde_json::Value) {
+    fs::create_dir_all(env.profiles_dir()).expect("create profiles dir");
+    let value = serde_json::json!({ "tokens": tokens });
+    let path = env.profiles_dir().join(format!("{id}.json"));
+    fs::write(
+        path,
+        serde_json::to_string(&value).expect("serialize profile"),
+    )
+    .expect("write profile");
+}
+
+fn write_auth_tokens(env: &TestEnv, tokens: serde_json::Value) {
+    let value = serde_json::json!({ "tokens": tokens });
+    let path = env.codex_dir().join("auth.json");
+    fs::write(path, serde_json::to_string(&value).expect("serialize auth")).expect("write auth");
+}
+
+fn seed_api_profile(env: &TestEnv, id: &str, account_id: &str) {
+    write_profile_tokens(
+        env,
+        id,
+        serde_json::json!({
+            "account_id": account_id,
+        }),
+    );
+}
+
+fn seed_errored_profile(env: &TestEnv, id: &str) {
+    write_profile_tokens(
+        env,
+        id,
+        serde_json::json!({
+            "account_id": "acct-errored",
+            "refresh_token": "refresh-only"
+        }),
+    );
+}
+
 #[test]
 fn ui_save_command() {
     let env = TestEnv::new();
@@ -369,7 +417,7 @@ fn ui_save_command() {
 fn ui_save_missing_auth() {
     let env = TestEnv::new();
     let err = env.run_expect_error(&["save"]);
-    assert!(err.contains("Codex auth file not found"));
+    assert!(err.contains("Auth file not found"));
 }
 
 #[test]
@@ -377,7 +425,7 @@ fn ui_save_empty_label() {
     let env = TestEnv::new();
     seed_alpha(&env);
     let err = env.run_expect_error(&["save", "--label", "   "]);
-    assert!(err.contains("label cannot be empty"));
+    assert!(err.contains("Label cannot be empty"));
 }
 
 #[test]
@@ -420,7 +468,7 @@ fn ui_save_duplicate_label() {
     env.run(&["save", "--label", "alpha"]);
     seed_beta(&env);
     let err = env.run_expect_error(&["save", "--label", "alpha"]);
-    assert!(err.contains("label 'alpha' already exists"));
+    assert!(err.contains("Label 'alpha' already exists"));
 }
 
 #[test]
@@ -439,7 +487,7 @@ fn ui_load_label_not_found() {
     let env = TestEnv::new();
     seed_profiles(&env);
     let err = env.run_expect_error(&["load", "--label", "missing"]);
-    assert!(err.contains("label 'missing' was not found"));
+    assert!(err.contains("Label 'missing' was not found"));
 }
 
 #[test]
@@ -474,7 +522,7 @@ fn ui_load_unsaved_profile_requires_prompt() {
         "token-current",
     );
     let err = env.run_expect_error(&["load", "--label", "alpha"]);
-    assert!(err.contains("current profile is not saved"));
+    assert!(err.contains("Current profile is not saved"));
 }
 
 #[test]
@@ -501,7 +549,7 @@ fn ui_delete_requires_confirmation() {
     let env = TestEnv::new();
     seed_profiles(&env);
     let err = env.run_expect_error(&["delete", "--label", "beta"]);
-    assert!(err.contains("deletion requires confirmation"));
+    assert!(err.contains("Deletion requires confirmation"));
 }
 
 #[test]
@@ -524,7 +572,7 @@ fn ui_list_command() {
     seed_current(&env);
     let output = env.run(&["list"]);
     assert!(output.contains("current@example.com"));
-    assert!(output.contains("WARNING: This profile is not saved yet."));
+    assert!(output.contains("Warning: This profile is not saved yet."));
     assert!(output.contains("Run `codex-profiles save` to save this profile."));
     assert!(output.contains("alpha@example.com"));
     assert!(output.contains("beta@example.com"));
@@ -538,11 +586,13 @@ fn ui_list_free_plan() {
     seed_free(&env);
     env.run(&["save", "--label", "free"]);
     let output = env.run(&["list"]);
-    assert!(output.contains("You need a ChatGPT subscription to use Codex CLI"));
+    assert!(output.contains(FREE_EMAIL));
+    assert!(!output.contains("You need a ChatGPT subscription to use Codex CLI"));
+    assert!(!output.contains("Data not available"));
 }
 
 #[test]
-fn ui_sync_current_updates_profile() {
+fn ui_list_does_not_sync_current_profile() {
     let env = TestEnv::new();
     seed_alpha(&env);
     env.run(&["save", "--label", "alpha"]);
@@ -550,11 +600,12 @@ fn ui_sync_current_updates_profile() {
     env.run(&["list"]);
     let profile_path = env.profiles_dir().join(format!("{ALPHA_ID}.json"));
     let contents = fs::read_to_string(profile_path).expect("read profile");
-    assert!(contents.contains("token-alpha-rotated"));
+    assert!(!contents.contains("token-alpha-rotated"));
+    assert!(contents.contains(ALPHA_TOKEN));
 }
 
 #[test]
-fn ui_profiles_index_tracks_last_used() {
+fn ui_profiles_index_does_not_store_last_used() {
     let env = TestEnv::new();
     seed_profiles(&env);
     let index_path = env.profiles_dir().join("profiles.json");
@@ -569,8 +620,8 @@ fn ui_profiles_index_tracks_last_used() {
         .get(BETA_ID)
         .and_then(|entry| entry.get("last_used"))
         .and_then(|value| value.as_u64());
-    assert!(alpha_last_used.unwrap_or_default() > 0);
-    assert!(beta_last_used.unwrap_or_default() > 0);
+    assert!(alpha_last_used.is_none());
+    assert!(beta_last_used.is_none());
 }
 
 #[test]
@@ -629,7 +680,7 @@ fn ui_status_all_command() {
         &["status", "--all"],
         &["alpha@example.com", "beta@example.com"],
     );
-    let output = env.run(&["status", "--all"]);
+    let output = env.run(&["status", "--all", "--show-errors"]);
     assert_order(&output, "alpha@example.com", "beta@example.com");
 }
 
@@ -644,10 +695,121 @@ fn ui_status_all_no_usage() {
     );
     seed_alpha(&env);
     env.write_config("http://127.0.0.1:1/backend-api");
+    let output = env.run(&["status", "--all", "--show-errors"]);
+    assert!(output.contains("alpha@example.com"));
+    assert!(output.contains("beta@example.com"));
+    assert!(output.contains("Error:"));
+}
+
+#[test]
+fn ui_status_all_hides_api_profiles_by_default() {
+    let env = TestEnv::new();
+    seed_profiles(&env);
+    seed_alpha(&env);
+    seed_api_profile(&env, "api-key-hidden", "api-key-sk-proj-hidden1234567890");
+    env.write_profiles_index(
+        &[(ALPHA_ID, 300), (BETA_ID, 200), ("api-key-hidden", 100)],
+        &[(ALPHA_ID, "alpha"), (BETA_ID, "beta")],
+        None,
+    );
+    let usage_body = r#"{"rate_limit":{"primary_window":{"used_percent":20,"limit_window_seconds":18000,"reset_at":2000000000}}}"#;
+    let (usage_addr, usage_handle) = start_usage_server(usage_body, 6).expect("usage server");
+    env.write_config(&format!("http://{usage_addr}/backend-api"));
+
     let output = env.run(&["status", "--all"]);
     assert!(output.contains("alpha@example.com"));
     assert!(output.contains("beta@example.com"));
-    assert!(output.contains("Error: failed to fetch usage"));
+    assert!(output.contains("+ 1 API profiles hidden"));
+    assert!(!output.contains("Usage unavailable for API key"));
+    let _ = usage_handle.join();
+}
+
+#[test]
+fn ui_status_all_hides_errored_profiles_by_default() {
+    let env = TestEnv::new();
+    seed_profiles(&env);
+    seed_alpha(&env);
+    seed_errored_profile(&env, "gamma@example.com-team");
+    env.write_profiles_index(
+        &[
+            (ALPHA_ID, 300),
+            (BETA_ID, 200),
+            ("gamma@example.com-team", 100),
+        ],
+        &[(ALPHA_ID, "alpha"), (BETA_ID, "beta")],
+        None,
+    );
+    let usage_body = r#"{"rate_limit":{"primary_window":{"used_percent":20,"limit_window_seconds":18000,"reset_at":2000000000}}}"#;
+    let (usage_addr, usage_handle) = start_usage_server(usage_body, 6).expect("usage server");
+    env.write_config(&format!("http://{usage_addr}/backend-api"));
+
+    let output = env.run(&["status", "--all"]);
+    assert!(output.contains("alpha@example.com"));
+    assert!(output.contains("beta@example.com"));
+    assert!(output.contains("+ 1 errored profiles hidden (use `--show-errors`)"));
+    assert!(!output.contains("Profile is missing"));
+    let _ = usage_handle.join();
+}
+
+#[test]
+fn ui_status_all_show_errors_includes_errored_profiles() {
+    let env = TestEnv::new();
+    seed_profiles(&env);
+    seed_alpha(&env);
+    seed_errored_profile(&env, "gamma@example.com-team");
+    env.write_profiles_index(
+        &[
+            (ALPHA_ID, 300),
+            (BETA_ID, 200),
+            ("gamma@example.com-team", 100),
+        ],
+        &[(ALPHA_ID, "alpha"), (BETA_ID, "beta")],
+        None,
+    );
+    let usage_body = r#"{"rate_limit":{"primary_window":{"used_percent":20,"limit_window_seconds":18000,"reset_at":2000000000}}}"#;
+    let (usage_addr, usage_handle) = start_usage_server(usage_body, 6).expect("usage server");
+    env.write_config(&format!("http://{usage_addr}/backend-api"));
+
+    let output = env.run(&["status", "--all", "--show-errors"]);
+    assert!(output.contains("alpha@example.com"));
+    assert!(output.contains("beta@example.com"));
+    assert!(output.contains("Error: Profile is missing email or plan information."));
+    assert!(!output.contains("errored profiles hidden"));
+    let _ = usage_handle.join();
+}
+
+#[test]
+fn ui_status_all_hides_current_api_profile() {
+    let env = TestEnv::new();
+    seed_profiles(&env);
+    seed_api_profile(&env, "api-key-current", "api-key-sk-proj-current1234567890");
+    seed_api_profile(&env, "api-key-hidden", "api-key-sk-proj-hidden1234567890");
+    env.write_profiles_index(
+        &[
+            (ALPHA_ID, 300),
+            (BETA_ID, 200),
+            ("api-key-current", 150),
+            ("api-key-hidden", 100),
+        ],
+        &[(ALPHA_ID, "alpha"), (BETA_ID, "beta")],
+        None,
+    );
+    write_auth_tokens(
+        &env,
+        serde_json::json!({
+            "account_id": "api-key-sk-proj-current1234567890",
+        }),
+    );
+    let usage_body = r#"{"rate_limit":{"primary_window":{"used_percent":20,"limit_window_seconds":18000,"reset_at":2000000000}}}"#;
+    let (usage_addr, usage_handle) = start_usage_server(usage_body, 6).expect("usage server");
+    env.write_config(&format!("http://{usage_addr}/backend-api"));
+
+    let output = env.run(&["status", "--all"]);
+    assert!(output.contains("alpha@example.com"));
+    assert!(output.contains("beta@example.com"));
+    assert!(!output.contains("Usage unavailable for API key"));
+    assert!(output.contains("+ 2 API profiles hidden"));
+    let _ = usage_handle.join();
 }
 
 #[test]
@@ -672,11 +834,18 @@ fn ui_list_removes_invalid_profiles() {
 fn ui_status_refresh_updates_profile() {
     let env = TestEnv::new();
     let usage_body = r#"{"rate_limit":{"primary_window":{"used_percent":20,"limit_window_seconds":18000,"reset_at":2000000000}}}"#;
+    let usage_ok = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+        usage_body.len(),
+        usage_body
+    );
+    let usage_unauthorized = "HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n".to_string();
     let refresh_id_token = build_id_token(ALPHA_EMAIL, ALPHA_PLAN);
     let refresh_body = format!(
         "{{\"id_token\":\"{refresh_id_token}\",\"access_token\":\"new-access\",\"refresh_token\":\"new-refresh\"}}"
     );
-    let (usage_addr, usage_handle) = start_usage_server(usage_body, 4).expect("usage server");
+    let (usage_addr, usage_handle) =
+        start_response_server(vec![usage_unauthorized, usage_ok], 4).expect("usage server");
     let (refresh_addr, refresh_handle) =
         start_usage_server(Box::leak(refresh_body.into_boxed_str()), 2).expect("refresh server");
 
@@ -704,4 +873,66 @@ fn ui_status_refresh_updates_profile() {
 
     let _ = usage_handle.join();
     let _ = refresh_handle.join();
+}
+
+#[test]
+fn ui_status_all_uses_usage_path_when_id_token_missing() {
+    let env = TestEnv::new();
+    let profile_id = "mail1@example.com-team";
+    write_profile_tokens(
+        &env,
+        profile_id,
+        serde_json::json!({
+            "account_id": "acct-mail-1",
+            "access_token": "token-mail-1",
+            "refresh_token": "refresh-mail-1"
+        }),
+    );
+    env.write_profiles_index(
+        &[(profile_id, 10)],
+        &[(profile_id, "mail1")],
+        Some(profile_id),
+    );
+    seed_current(&env);
+
+    let usage_402_body = r#"{"error":"payment_required"}"#;
+    let usage_402_resp = format!(
+        "HTTP/1.1 402 Payment Required\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+        usage_402_body.len(),
+        usage_402_body
+    );
+    let (usage_addr, usage_handle) = start_response_server(vec![usage_402_resp], 4).expect("usage");
+    env.write_config(&format!("http://{usage_addr}/backend-api"));
+
+    let output = env.run(&["status", "--all", "--show-errors"]);
+    assert!(output.contains("mail1"));
+    assert!(output.contains("Usage unavailable (402)"));
+    assert!(!output.contains("Auth is incomplete. Run `codex login`."));
+
+    let _ = usage_handle.join();
+}
+
+#[test]
+fn ui_status_api_key_error_message_is_standardized() {
+    let env = TestEnv::new();
+    let profile_id = "api-key-profile";
+    write_profile_tokens(
+        &env,
+        profile_id,
+        serde_json::json!({
+            "account_id": "api-key-sk-proj-abcdef1234567890",
+            "refresh_token": ""
+        }),
+    );
+    env.write_profiles_index(
+        &[(profile_id, 10)],
+        &[(profile_id, "key")],
+        Some(profile_id),
+    );
+
+    let output = env.run(&["status", "--label", "key"]);
+    assert!(output.contains("Error: Usage unavailable for API key"));
+    assert!(
+        output.contains("Rate-limit usage data is only available for ChatGPT account profiles.")
+    );
 }

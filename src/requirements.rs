@@ -1,4 +1,4 @@
-use crate::{InstallSource, format_cmd};
+use crate::{InstallSource, REQUIREMENTS_ERR_CODEX_MISSING, format_cmd};
 
 pub fn ensure_codex_cli(source: InstallSource) -> Result<(), String> {
     ensure_codex_cli_with(source, cfg!(debug_assertions))
@@ -12,9 +12,7 @@ fn ensure_codex_cli_with(source: InstallSource, is_debug: bool) -> Result<(), St
         return Ok(());
     }
     let install_cmd = format_cmd(&install_command(source), false);
-    Err(format!(
-        "Error: Codex CLI not found. Install it with {install_cmd}."
-    ))
+    Err(crate::msg1(REQUIREMENTS_ERR_CODEX_MISSING, install_cmd))
 }
 
 fn install_command(source: InstallSource) -> String {

@@ -67,20 +67,22 @@ fn run(cli: Cli) -> Result<(), String> {
         }
     }
 
-    let _ = sync_current_readonly(&paths);
-
     match cli.command {
         Commands::Save { label } => save_profile(&paths, label),
         Commands::Load { label } => load_profile(&paths, label),
-        Commands::List => list_profiles(&paths, false, false, false, false),
-        Commands::Status { all, label } => {
+        Commands::List => list_profiles(&paths),
+        Commands::Status {
+            all,
+            show_errors,
+            label,
+        } => {
             if label.is_some() && all {
-                return Err("Error: --label cannot be combined with --all.".to_string());
+                return Err(crate::CMD_ERR_LABEL_WITH_ALL.to_string());
             }
             if let Some(label) = label {
                 status_label(&paths, &label)
             } else {
-                status_profiles(&paths, all)
+                status_profiles(&paths, all, show_errors)
             }
         }
         Commands::Delete { yes, label } => delete_profile(&paths, yes, label),
@@ -92,19 +94,20 @@ fn run_update_action(action: UpdateAction) -> Result<(), String> {
     let status = ProcessCommand::new(command)
         .args(args)
         .status()
-        .map_err(|err| format!("Error: failed to run update command: {err}"))?;
+        .map_err(|err| crate::msg1(crate::CMD_ERR_UPDATE_RUN, err))?;
     if status.success() {
         Ok(())
     } else {
-        Err(format!(
-            "Error: update command failed: {}",
-            action.command_str()
+        Err(crate::msg1(
+            crate::CMD_ERR_UPDATE_FAILED,
+            action.command_str(),
         ))
     }
 }
 mod auth;
 mod cli;
 mod common;
+mod messages;
 mod profiles;
 mod requirements;
 #[cfg(test)]
@@ -115,6 +118,7 @@ mod usage;
 
 pub use auth::*;
 pub use common::*;
+pub use messages::*;
 pub use profiles::*;
 pub use requirements::*;
 pub use ui::*;
@@ -164,7 +168,7 @@ mod tests {
         {
             let _env = set_env_guard("PATH", Some(""));
             let err = run_update_action(UpdateAction::NpmGlobalLatest).unwrap_err();
-            assert!(err.contains("failed to run update command"));
+            assert!(err.contains("Could not run update command"));
         }
     }
 

@@ -7,7 +7,7 @@
   },
   "type": "module",
   "engines": {
-    "node": ">=16"
+    "node": ">=20"
   },
   "optionalDependencies": {
     "codex-profiles-darwin-arm64": "0.1.0",
