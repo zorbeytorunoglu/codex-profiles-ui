@@ -90,7 +90,8 @@ from pathlib import Path
 
 path = Path("Cargo.toml")
 text = path.read_text(encoding="utf-8")
-text, count = re.subn(r'^(version\s*=\s*")([^"]+)("\s*)$', rf'\g<1>{new_ver}\g<3>', text, count=1, flags=re.M)
+replacement = r'\g<1>${new_ver}\g<3>'
+text, count = re.subn(r'^(version\s*=\s*")([^"]+)("\s*)$', replacement, text, count=1, flags=re.M)
 if count != 1:
     raise SystemExit("Failed to update version in Cargo.toml")
 path.write_text(text, encoding="utf-8")
