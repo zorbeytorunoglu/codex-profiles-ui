@@ -5,7 +5,17 @@ use serde_with::{NoneAsEmptyString, serde_as};
 use std::path::Path;
 use std::time::Duration;
 
-use crate::write_atomic;
+use crate::{
+    AUTH_ERR_FILE_NOT_FOUND, AUTH_ERR_INCOMPLETE_ACCOUNT, AUTH_ERR_INCOMPLETE_EMAIL,
+    AUTH_ERR_INCOMPLETE_PLAN, AUTH_ERR_INVALID_JSON, AUTH_ERR_INVALID_JSON_OBJECT,
+    AUTH_ERR_INVALID_JSON_RELOGIN, AUTH_ERR_INVALID_REFRESH_RESPONSE,
+    AUTH_ERR_INVALID_TOKENS_OBJECT, AUTH_ERR_MISSING_TOKENS, AUTH_ERR_PROFILE_MISSING_ACCESS_TOKEN,
+    AUTH_ERR_PROFILE_MISSING_ACCOUNT, AUTH_ERR_PROFILE_MISSING_EMAIL_PLAN,
+    AUTH_ERR_PROFILE_NO_REFRESH_TOKEN, AUTH_ERR_READ, AUTH_ERR_REFRESH_FAILED_CODE,
+    AUTH_ERR_REFRESH_FAILED_OTHER, AUTH_ERR_REFRESH_MISSING_ACCESS_TOKEN, AUTH_ERR_SERIALIZE_AUTH,
+    AUTH_ERR_WRITE_AUTH, AUTH_REFRESH_401_TITLE, AUTH_RELOGIN_AND_SAVE, UI_ERROR_TWO_LINE,
+    write_atomic,
+};
 
 const API_KEY_PREFIX: &str = "api-key-";
 const API_KEY_LABEL: &str = "Key";
@@ -47,7 +57,16 @@ pub struct Tokens {
 struct IdTokenClaims {
     #[serde(default)]
     #[serde_as(as = "NoneAsEmptyString")]
+    sub: Option<String>,
+    #[serde(default)]
+    #[serde_as(as = "NoneAsEmptyString")]
     email: Option<String>,
+    #[serde(default)]
+    #[serde_as(as = "NoneAsEmptyString")]
+    organization_id: Option<String>,
+    #[serde(default)]
+    #[serde_as(as = "NoneAsEmptyString")]
+    project_id: Option<String>,
     #[serde(rename = "https://api.openai.com/auth")]
     auth: Option<AuthClaims>,
 }
@@ -58,6 +77,22 @@ struct AuthClaims {
     #[serde(default)]
     #[serde_as(as = "NoneAsEmptyString")]
     chatgpt_plan_type: Option<String>,
+    #[serde(default)]
+    #[serde_as(as = "NoneAsEmptyString")]
+    chatgpt_user_id: Option<String>,
+    #[serde(default)]
+    #[serde_as(as = "NoneAsEmptyString")]
+    user_id: Option<String>,
+    #[serde(default)]
+    #[serde_as(as = "NoneAsEmptyString")]
+    chatgpt_account_id: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProfileIdentityKey {
+    pub principal_id: String,
+    pub workspace_or_org_id: String,
+    pub plan_type: String,
 }
 
 pub fn read_tokens(path: &Path) -> Result<Tokens, String> {
@@ -68,26 +103,19 @@ pub fn read_tokens(path: &Path) -> Result<Tokens, String> {
     if let Some(api_key) = auth.openai_api_key.as_deref() {
         return Ok(tokens_from_api_key(api_key));
     }
-    Err(format!(
-        "Error: missing tokens in {}. Run `codex login` to authenticate.",
-        path.display()
-    ))
+    Err(crate::msg1(AUTH_ERR_MISSING_TOKENS, path.display()))
 }
 
 pub fn read_auth_file(path: &Path) -> Result<AuthFile, String> {
     let data = std::fs::read_to_string(path).map_err(|err| {
         if err.kind() == std::io::ErrorKind::NotFound {
-            "Error: Codex auth file not found. Run `codex login` first.".to_string()
+            AUTH_ERR_FILE_NOT_FOUND.to_string()
         } else {
-            format!("Error: failed to read {}: {err}", path.display())
+            crate::msg2(AUTH_ERR_READ, path.display(), err)
         }
     })?;
-    let auth: AuthFile = serde_json::from_str(&data).map_err(|err| {
-        format!(
-            "Error: invalid JSON in {}: {err}. Run `codex login` to regenerate it.",
-            path.display()
-        )
-    })?;
+    let auth: AuthFile = serde_json::from_str(&data)
+        .map_err(|err| crate::msg2(AUTH_ERR_INVALID_JSON_RELOGIN, path.display(), err))?;
     Ok(auth)
 }
 
@@ -144,22 +172,93 @@ pub fn extract_email_and_plan(tokens: &Tokens) -> (Option<String>, Option<String
     (email, plan)
 }
 
+pub fn extract_profile_identity(tokens: &Tokens) -> Option<ProfileIdentityKey> {
+    if is_api_key_profile(tokens) {
+        let principal_id = token_account_id(tokens)?.to_string();
+        return Some(ProfileIdentityKey {
+            workspace_or_org_id: principal_id.clone(),
+            principal_id,
+            plan_type: "key".to_string(),
+        });
+    }
+
+    let claims = tokens.id_token.as_deref().and_then(decode_id_token_claims);
+    let principal_id = claims
+        .as_ref()
+        .and_then(|claims| {
+            claims.auth.as_ref().and_then(|auth| {
+                auth.chatgpt_user_id
+                    .clone()
+                    .or_else(|| auth.user_id.clone())
+            })
+        })
+        .or_else(|| claims.as_ref().and_then(|claims| claims.sub.clone()))
+        .or_else(|| token_account_id(tokens).map(str::to_string))
+        .and_then(|value| normalize_identity_value(&value))?;
+
+    let workspace_or_org_id = token_account_id(tokens)
+        .map(str::to_string)
+        .or_else(|| {
+            claims.as_ref().and_then(|claims| {
+                claims
+                    .auth
+                    .as_ref()
+                    .and_then(|auth| auth.chatgpt_account_id.clone())
+            })
+        })
+        .or_else(|| {
+            claims
+                .as_ref()
+                .and_then(|claims| claims.organization_id.clone())
+        })
+        .or_else(|| claims.as_ref().and_then(|claims| claims.project_id.clone()))
+        .and_then(|value| normalize_identity_value(&value))
+        .unwrap_or_else(|| "unknown".to_string());
+
+    let plan_type = claims
+        .as_ref()
+        .and_then(|claims| {
+            claims
+                .auth
+                .as_ref()
+                .and_then(|auth| auth.chatgpt_plan_type.clone())
+        })
+        .or_else(|| extract_email_and_plan(tokens).1)
+        .map(|value| normalize_plan_type(&value))
+        .unwrap_or_else(|| "unknown".to_string());
+
+    Some(ProfileIdentityKey {
+        principal_id,
+        workspace_or_org_id,
+        plan_type,
+    })
+}
+
+fn normalize_identity_value(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn normalize_plan_type(value: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        "unknown".to_string()
+    } else {
+        trimmed.to_ascii_lowercase()
+    }
+}
+
 pub fn require_identity(tokens: &Tokens) -> Result<(String, String, String), String> {
     let Some(account_id) = token_account_id(tokens) else {
-        return Err(
-            "Error: auth.json is missing tokens.account_id. Run `codex login` to reauthenticate."
-                .to_string(),
-        );
+        return Err(AUTH_ERR_INCOMPLETE_ACCOUNT.to_string());
     };
     let (email, plan) = extract_email_and_plan(tokens);
-    let email = email.ok_or_else(|| {
-        "Error: auth.json is missing id_token email. Run `codex login` to reauthenticate."
-            .to_string()
-    })?;
-    let plan = plan.ok_or_else(|| {
-        "Error: auth.json is missing id_token plan. Run `codex login` to reauthenticate."
-            .to_string()
-    })?;
+    let email = email.ok_or_else(|| AUTH_ERR_INCOMPLETE_EMAIL.to_string())?;
+    let plan = plan.ok_or_else(|| AUTH_ERR_INCOMPLETE_PLAN.to_string())?;
     Ok((account_id.to_string(), email, plan))
 }
 
@@ -172,13 +271,13 @@ pub fn profile_error(
         return None;
     }
     if email.is_none() || plan.is_none() {
-        return Some("profile missing id_token email/plan");
+        return Some(AUTH_ERR_PROFILE_MISSING_EMAIL_PLAN);
     }
     if token_account_id(tokens).is_none() {
-        return Some("profile missing tokens.account_id");
+        return Some(AUTH_ERR_PROFILE_MISSING_ACCOUNT);
     }
     if tokens.access_token.is_none() {
-        return Some("profile missing tokens.access_token");
+        return Some(AUTH_ERR_PROFILE_MISSING_ACCESS_TOKEN);
     }
     None
 }
@@ -301,10 +400,7 @@ pub fn refresh_profile_tokens(path: &Path, tokens: &mut Tokens) -> Result<(), St
         .refresh_token
         .as_deref()
         .filter(|value| !value.is_empty())
-        .ok_or_else(|| {
-            "Error: profile is missing refresh_token; run `codex login` and save it again."
-                .to_string()
-        })?;
+        .ok_or_else(|| AUTH_ERR_PROFILE_NO_REFRESH_TOKEN.to_string())?;
     let refreshed = refresh_access_token(refresh_token)?;
     apply_refresh(tokens, &refreshed)?;
     update_auth_tokens(path, &refreshed)?;
@@ -329,20 +425,23 @@ fn refresh_access_token(refresh_token: &str) -> Result<RefreshResponse, String> 
         .header("Content-Type", "application/json")
         .send_json(&request)
         .map_err(|err| match err {
-            ureq::Error::StatusCode(code) => {
-                format!("Error: failed to refresh access token: http status: {code}")
-            }
-            other => format!("Error: failed to refresh access token: {other}"),
+            ureq::Error::StatusCode(401) => crate::msg2(
+                UI_ERROR_TWO_LINE,
+                AUTH_REFRESH_401_TITLE,
+                AUTH_RELOGIN_AND_SAVE,
+            ),
+            ureq::Error::StatusCode(code) => crate::msg1(AUTH_ERR_REFRESH_FAILED_CODE, code),
+            other => crate::msg1(AUTH_ERR_REFRESH_FAILED_OTHER, other),
         })?;
     response
         .into_body()
         .read_json::<RefreshResponse>()
-        .map_err(|err| format!("Error: failed to parse refresh response: {err}"))
+        .map_err(|err| crate::msg1(AUTH_ERR_INVALID_REFRESH_RESPONSE, err))
 }
 
 fn apply_refresh(tokens: &mut Tokens, refreshed: &RefreshResponse) -> Result<(), String> {
     let Some(access_token) = refreshed.access_token.as_ref() else {
-        return Err("Error: refresh response missing access_token.".to_string());
+        return Err(AUTH_ERR_REFRESH_MISSING_ACCESS_TOKEN.to_string());
     };
     tokens.access_token = Some(access_token.clone());
     if let Some(id_token) = refreshed.id_token.as_ref() {
@@ -356,23 +455,17 @@ fn apply_refresh(tokens: &mut Tokens, refreshed: &RefreshResponse) -> Result<(),
 
 fn update_auth_tokens(path: &Path, refreshed: &RefreshResponse) -> Result<(), String> {
     let contents = std::fs::read_to_string(path)
-        .map_err(|err| format!("Error: failed to read {}: {err}", path.display()))?;
+        .map_err(|err| crate::msg2(AUTH_ERR_READ, path.display(), err))?;
     let mut value: serde_json::Value = serde_json::from_str(&contents)
-        .map_err(|err| format!("Error: invalid JSON in {}: {err}", path.display()))?;
+        .map_err(|err| crate::msg2(AUTH_ERR_INVALID_JSON, path.display(), err))?;
     let Some(root) = value.as_object_mut() else {
-        return Err(format!(
-            "Error: invalid JSON in {} (expected object)",
-            path.display()
-        ));
+        return Err(crate::msg1(AUTH_ERR_INVALID_JSON_OBJECT, path.display()));
     };
     let tokens = root
         .entry("tokens")
         .or_insert_with(|| serde_json::json!({}));
     let Some(tokens_map) = tokens.as_object_mut() else {
-        return Err(format!(
-            "Error: invalid tokens in {} (expected object)",
-            path.display()
-        ));
+        return Err(crate::msg1(AUTH_ERR_INVALID_TOKENS_OBJECT, path.display()));
     };
     if let Some(id_token) = refreshed.id_token.as_ref() {
         tokens_map.insert(
@@ -393,9 +486,9 @@ fn update_auth_tokens(path: &Path, refreshed: &RefreshResponse) -> Result<(), St
         );
     }
     let json = serde_json::to_string_pretty(&value)
-        .map_err(|err| format!("Error: failed to serialize auth file: {err}"))?;
+        .map_err(|err| crate::msg1(AUTH_ERR_SERIALIZE_AUTH, err))?;
     write_atomic(path, format!("{json}\n").as_bytes())
-        .map_err(|err| format!("Error: failed to write {}: {err}", path.display()))
+        .map_err(|err| crate::msg2(AUTH_ERR_WRITE_AUTH, path.display(), err))
 }
 
 #[cfg(test)]
@@ -418,12 +511,12 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let missing = dir.path().join("missing.json");
         let err = read_auth_file(&missing).unwrap_err();
-        assert!(err.contains("auth file not found"));
+        assert!(err.contains("Auth file not found"));
 
         let bad = dir.path().join("bad.json");
         fs::write(&bad, "{oops").expect("write");
         let err = read_auth_file(&bad).unwrap_err();
-        assert!(err.contains("invalid JSON"));
+        assert!(err.contains("Invalid JSON"));
     }
 
     #[test]
@@ -447,7 +540,7 @@ mod tests {
         let empty_path = dir.path().join("empty.json");
         fs::write(&empty_path, "{}").unwrap();
         let err = read_tokens(&empty_path).unwrap_err();
-        assert!(err.contains("missing tokens"));
+        assert!(err.contains("Missing tokens"));
     }
 
     #[test]
@@ -494,6 +587,54 @@ mod tests {
     }
 
     #[test]
+    fn extract_profile_identity_prefers_user_and_workspace_claims() {
+        let id_token = build_id_token_payload(
+            "{\"email\":\"me@example.com\",\"https://api.openai.com/auth\":{\"chatgpt_plan_type\":\"team\",\"chatgpt_user_id\":\"user-123\",\"chatgpt_account_id\":\"ws-123\"}}",
+        );
+        let tokens = Tokens {
+            account_id: Some("acct-fallback".to_string()),
+            id_token: Some(id_token),
+            access_token: Some("acc".to_string()),
+            refresh_token: Some("ref".to_string()),
+        };
+        let identity = extract_profile_identity(&tokens).unwrap();
+        assert_eq!(identity.principal_id, "user-123");
+        assert_eq!(identity.workspace_or_org_id, "acct-fallback");
+        assert_eq!(identity.plan_type, "team");
+    }
+
+    #[test]
+    fn extract_profile_identity_falls_back_to_sub_and_org() {
+        let id_token = build_id_token_payload(
+            "{\"sub\":\"sub-1\",\"organization_id\":\"org-1\",\"https://api.openai.com/auth\":{\"chatgpt_plan_type\":\"Pro\"}}",
+        );
+        let tokens = Tokens {
+            account_id: None,
+            id_token: Some(id_token),
+            access_token: Some("acc".to_string()),
+            refresh_token: Some("ref".to_string()),
+        };
+        let identity = extract_profile_identity(&tokens).unwrap();
+        assert_eq!(identity.principal_id, "sub-1");
+        assert_eq!(identity.workspace_or_org_id, "org-1");
+        assert_eq!(identity.plan_type, "pro");
+    }
+
+    #[test]
+    fn extract_profile_identity_uses_account_fallback_when_claims_missing() {
+        let tokens = Tokens {
+            account_id: Some("acct-only".to_string()),
+            id_token: Some(build_id_token("me@example.com", "pro")),
+            access_token: Some("acc".to_string()),
+            refresh_token: Some("ref".to_string()),
+        };
+        let identity = extract_profile_identity(&tokens).unwrap();
+        assert_eq!(identity.principal_id, "acct-only");
+        assert_eq!(identity.workspace_or_org_id, "acct-only");
+        assert_eq!(identity.plan_type, "pro");
+    }
+
+    #[test]
     fn require_identity_errors() {
         let tokens = Tokens {
             account_id: None,
@@ -502,7 +643,7 @@ mod tests {
             refresh_token: None,
         };
         let err = require_identity(&tokens).unwrap_err();
-        assert!(err.contains("missing tokens.account_id"));
+        assert!(err.contains("missing account"));
     }
 
     #[test]
@@ -515,7 +656,7 @@ mod tests {
         };
         assert_eq!(
             profile_error(&tokens, Some("e"), Some("p")),
-            Some("profile missing tokens.access_token")
+            Some(crate::AUTH_ERR_PROFILE_MISSING_ACCESS_TOKEN)
         );
 
         let api_tokens = tokens_from_api_key("sk-test");
@@ -529,7 +670,7 @@ mod tests {
         };
         assert_eq!(
             profile_error(&tokens, Some("me@example.com"), Some("Pro")),
-            Some("profile missing tokens.account_id")
+            Some(crate::AUTH_ERR_PROFILE_MISSING_ACCOUNT)
         );
 
         let id_token = build_id_token_payload(
@@ -543,7 +684,7 @@ mod tests {
         };
         assert_eq!(
             profile_error(&tokens, None, Some("Pro")),
-            Some("profile missing id_token email/plan")
+            Some(crate::AUTH_ERR_PROFILE_MISSING_EMAIL_PLAN)
         );
     }
 
@@ -588,7 +729,7 @@ mod tests {
             refresh_token: None,
         };
         let err = require_identity(&tokens).unwrap_err();
-        assert!(err.contains("missing id_token plan"));
+        assert!(err.contains("missing plan"));
 
         let id_token = build_id_token_payload(
             "{\"https://api.openai.com/auth\":{\"chatgpt_plan_type\":\"pro\"}}",
@@ -600,7 +741,7 @@ mod tests {
             refresh_token: None,
         };
         let err = require_identity(&tokens).unwrap_err();
-        assert!(err.contains("missing id_token email"));
+        assert!(err.contains("missing email"));
 
         let tokens = Tokens {
             account_id: Some("acct".to_string()),
@@ -624,7 +765,7 @@ mod tests {
         fs::write(&path, serde_json::to_string(&value).unwrap()).unwrap();
         let mut tokens = read_tokens(&path).unwrap();
         let err = refresh_profile_tokens(&path, &mut tokens).unwrap_err();
-        assert!(err.contains("missing refresh_token"));
+        assert!(err.contains("refresh token"));
     }
 
     #[test]
@@ -661,7 +802,7 @@ mod tests {
             refresh_token: None,
         };
         let err = apply_refresh(&mut tokens, &refreshed).unwrap_err();
-        assert!(err.contains("missing access_token"));
+        assert!(err.contains("missing an access token"));
     }
 
     #[test]
@@ -677,7 +818,7 @@ mod tests {
             },
         )
         .unwrap_err();
-        assert!(err.contains("failed to read"));
+        assert!(err.contains("Could not read"));
 
         let bad = dir.path().join("bad.json");
         fs::write(&bad, "{oops").unwrap();
@@ -690,7 +831,7 @@ mod tests {
             },
         )
         .unwrap_err();
-        assert!(err.contains("invalid JSON"));
+        assert!(err.contains("Invalid JSON"));
 
         let not_obj = dir.path().join("not_obj.json");
         fs::write(&not_obj, "[]").unwrap();
@@ -716,7 +857,7 @@ mod tests {
             },
         )
         .unwrap_err();
-        assert!(err.contains("invalid tokens"));
+        assert!(err.contains("Invalid tokens"));
     }
 
     #[test]
@@ -736,7 +877,7 @@ mod tests {
         {
             let _env = set_env_guard(REFRESH_TOKEN_URL_OVERRIDE_ENV_VAR, Some(&err_url));
             let err = refresh_access_token("token").unwrap_err();
-            assert!(err.contains("http status"));
+            assert!(err.contains("unauthorized"));
         }
     }
 
