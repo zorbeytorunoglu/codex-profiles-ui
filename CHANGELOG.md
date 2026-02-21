@@ -15,11 +15,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Usage sorting and spinner animation in `status --all` output
+- `status --all --show-errors` to include errored profiles in the output
+- Hidden-profile summaries in `status --all` (API profiles and errored profiles)
 
 ### Fixed
 
-- Profile deduplication now uses a composite identity key (email + plan) to prevent false duplicates
+- Profile deduplication now uses a composite identity key (`principal_id` + `workspace_or_org_id` + `plan_type`) to prevent false matches
 - Profile lifecycle operations now preserve update cache and handle save/load/delete edge cases more safely
 - Installer trap variable scoping bug that could break cleanup on some shells
 - Release bump flow now syncs npm optional package versions and installer default `VERSION` correctly
@@ -28,11 +29,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Simplified profile state machine and status rendering logic
-- Profile ordering simplified in `status --all` output
+- Profile ordering changed from last-used timestamp sorting to deterministic profile-id ordering
+- `list` and `status` no longer perform implicit current-profile sync side effects
 - "Unknown last-used" badge is now hidden instead of shown as a placeholder
 
 ### Removed
 
+- `status --label` support (status now targets current profile, or all profiles with `--all`)
+- Last-used timestamp tracking in `profiles.json` profile metadata
 - Legacy `cx` shorthand script (use `codex-profiles` directly)
 
 ### Internal
