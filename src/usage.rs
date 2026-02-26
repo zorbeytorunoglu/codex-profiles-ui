@@ -291,10 +291,10 @@ fn usage_lines_from_payload(
 
 fn label_dual_window_lines(mut lines: Vec<String>) -> Vec<String> {
     if let Some(first) = lines.get_mut(0) {
-        *first = format!("primary: {first}");
+        *first = format!("5h: {first}");
     }
     if let Some(second) = lines.get_mut(1) {
-        *second = format!("secondary: {second}");
+        *second = format!("weekly: {second}");
     }
     lines
 }
@@ -851,8 +851,8 @@ mod tests {
             additional_rate_limits: None,
         };
         let lines = usage_lines_from_payload(&payload, "unavailable", now);
-        assert!(lines.iter().any(|line| line.starts_with("primary: ")));
-        assert!(lines.iter().any(|line| line.starts_with("secondary: ")));
+        assert!(lines.iter().any(|line| line.starts_with("5h: ")));
+        assert!(lines.iter().any(|line| line.starts_with("weekly: ")));
     }
 
     #[test]

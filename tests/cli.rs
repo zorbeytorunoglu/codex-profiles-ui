@@ -731,8 +731,8 @@ fn ui_status_all_renders_grouped_multi_bucket_windows() {
 
     let output = env.run(&["status", "--all"]);
     assert!(output.contains("codex"));
-    assert!(output.contains("primary:"));
-    assert!(output.contains("secondary:"));
+    assert!(output.contains("5h:"));
+    assert!(output.contains("weekly:"));
     assert!(output.contains("codex_other"));
     let _ = usage_handle.join();
 }
