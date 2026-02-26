@@ -226,12 +226,8 @@ fn format_label(label: Option<&str>, use_color: bool) -> String {
     }
 }
 
-fn format_email_badge(email: &str, is_current: bool) -> String {
-    if is_current {
-        format!(" {email} ").green().on_white().to_string()
-    } else {
-        format!(" {email} ").magenta().on_white().to_string()
-    }
+fn format_email_badge(email: &str, _is_current: bool) -> String {
+    format!(" {email} ").bright_black().on_white().to_string()
 }
 
 pub fn inquire_select_render_config() -> RenderConfig<'static> {
