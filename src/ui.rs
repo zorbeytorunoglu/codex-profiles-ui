@@ -171,6 +171,7 @@ pub fn format_profile_display(
     use_color: bool,
 ) -> String {
     let label = label.as_deref();
+    let current_suffix = format_current_suffix(is_current, use_color);
     if email
         .as_deref()
         .map(|value| value.eq_ignore_ascii_case("Key"))
@@ -182,7 +183,7 @@ pub fn format_profile_display(
     {
         let badge = format_plan_badge("Key", is_current, use_color);
         let label_suffix = format_label(label, use_color);
-        return format!("{badge}{label_suffix}");
+        return format!("{badge}{label_suffix}{current_suffix}");
     }
     let label_suffix = format_label(label, use_color);
     match email {
@@ -191,12 +192,16 @@ pub fn format_profile_display(
             let badge = format_plan_badge(&plan, is_current, use_color);
             if use_color {
                 let email_badge = format_email_badge(&email, is_current);
-                format!("{badge}{email_badge}{label_suffix}")
+                format!("{badge}{email_badge}{label_suffix}{current_suffix}")
             } else {
-                format!("{badge} {email}{label_suffix}")
+                format!("{badge} {email}{label_suffix}{current_suffix}")
             }
         }
-        None => crate::msg1(UI_UNKNOWN_PROFILE, label_suffix),
+        None => format!(
+            "{}{}",
+            crate::msg1(UI_UNKNOWN_PROFILE, label_suffix),
+            current_suffix
+        ),
     }
 }
 
@@ -228,6 +233,15 @@ fn format_label(label: Option<&str>, use_color: bool) -> String {
 
 fn format_email_badge(email: &str, _is_current: bool) -> String {
     format!(" {email} ").bright_black().on_white().to_string()
+}
+
+fn format_current_suffix(is_current: bool, use_color: bool) -> String {
+    if !is_current {
+        return String::new();
+    }
+    style_text(" <- current profile", use_color, |text| {
+        text.dimmed().italic()
+    })
 }
 
 pub fn inquire_select_render_config() -> RenderConfig<'static> {
@@ -426,6 +440,7 @@ mod tests {
             false,
         );
         assert!(key.to_lowercase().contains("key"));
+        assert!(!key.contains("<- current profile"));
         let display = format_profile_display(
             Some("me@example.com".to_string()),
             Some("Free".to_string()),
@@ -434,6 +449,7 @@ mod tests {
             false,
         );
         assert!(display.contains("me@example.com"));
+        assert!(display.contains("<- current profile"));
         let unknown = format_profile_display(None, None, None, false, false);
         assert!(unknown.contains("Unknown"));
     }
