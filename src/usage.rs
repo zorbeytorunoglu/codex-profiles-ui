@@ -41,7 +41,6 @@ pub(crate) struct UsageLimits {
 pub(crate) struct UsageWindow {
     pub(crate) left_percent: f64,
     pub(crate) reset_at: i64,
-    pub(crate) reset_at_relative: Option<String>,
 }
 
 #[derive(Debug)]
@@ -235,12 +234,12 @@ pub fn fetch_usage_details(
 }
 
 #[cfg(test)]
-fn build_usage_limits(payload: &UsagePayload, now: DateTime<Local>) -> UsageLimits {
+fn build_usage_limits(payload: &UsagePayload) -> UsageLimits {
     let buckets = ordered_usage_buckets(usage_buckets(payload));
     let Some(preferred_bucket) = buckets.first() else {
         return UsageLimits::default();
     };
-    build_usage_limits_for_rate_limit(preferred_bucket.rate_limit.as_ref(), now)
+    build_usage_limits_for_rate_limit(preferred_bucket.rate_limit.as_ref())
 }
 
 fn usage_lines_from_payload(
@@ -258,7 +257,7 @@ fn usage_lines_from_payload(
     let multi_bucket = buckets.len() > 1;
     let mut lines = Vec::new();
     for bucket in buckets {
-        let limits = build_usage_limits_for_rate_limit(bucket.rate_limit.as_ref(), now);
+        let limits = build_usage_limits_for_rate_limit(bucket.rate_limit.as_ref());
         let has_data = limits.five_hour.is_some() || limits.weekly.is_some();
         if !has_data {
             continue;
@@ -291,10 +290,10 @@ fn usage_lines_from_payload(
 
 fn label_dual_window_lines(mut lines: Vec<String>) -> Vec<String> {
     if let Some(first) = lines.get_mut(0) {
-        *first = format!("5h: {first}");
+        *first = format!("5 hour: {first}");
     }
     if let Some(second) = lines.get_mut(1) {
-        *second = format!("weekly: {second}");
+        *second = format!("Weekly: {second}");
     }
     lines
 }
@@ -352,10 +351,7 @@ fn usage_bucket_label(bucket: &UsageBucket) -> &str {
     }
 }
 
-fn build_usage_limits_for_rate_limit(
-    rate_limit: Option<&RateLimitDetails>,
-    now: DateTime<Local>,
-) -> UsageLimits {
+fn build_usage_limits_for_rate_limit(rate_limit: Option<&RateLimitDetails>) -> UsageLimits {
     let mut limits = UsageLimits::default();
     let Some(rate_limit) = rate_limit else {
         return limits;
@@ -366,12 +362,7 @@ fn build_usage_limits_for_rate_limit(
     ]
     .into_iter()
     .flatten()
-    .map(|window| {
-        (
-            window.limit_window_seconds,
-            usage_window_output(window, now),
-        )
-    })
+    .map(|window| (window.limit_window_seconds, usage_window_output(window)))
     .collect();
     if windows.is_empty() {
         return limits;
@@ -386,14 +377,12 @@ fn build_usage_limits_for_rate_limit(
     limits
 }
 
-fn usage_window_output(window: &RateLimitWindowSnapshot, now: DateTime<Local>) -> UsageWindow {
+fn usage_window_output(window: &RateLimitWindowSnapshot) -> UsageWindow {
     let left_percent = (100.0 - window.used_percent).clamp(0.0, 100.0);
     let reset_at = window.reset_at;
-    let reset_at_relative = format_reset_relative(reset_at, now);
     UsageWindow {
         left_percent,
         reset_at,
-        reset_at_relative,
     }
 }
 
@@ -428,10 +417,8 @@ pub(crate) fn format_limit(
     let bar = render_bar(left_percent);
     let bar = style_usage_bar(&bar, left_percent);
     let percent = format!("{left_percent_rounded}%");
-    let reset = window.reset_at_relative.clone().unwrap_or_else(|| {
-        let local = local_from_timestamp(window.reset_at).unwrap_or(now);
-        local.format("%H:%M on %d %b").to_string()
-    });
+    let reset =
+        format_reset_timestamp(window.reset_at, now).unwrap_or_else(|| "unknown".to_string());
     UsageLine {
         bar,
         percent,
@@ -478,14 +465,14 @@ pub(crate) fn format_usage(
         .collect()
 }
 
-pub(crate) fn format_reset_relative(reset_at: i64, now: DateTime<Local>) -> Option<String> {
+pub(crate) fn format_reset_timestamp(reset_at: i64, now: DateTime<Local>) -> Option<String> {
     let reset_at = local_from_timestamp(reset_at)?;
-    let duration = reset_at.signed_duration_since(now);
-    if duration.num_seconds() <= 0 {
-        return Some("now".to_string());
+    let time = reset_at.format("%H:%M").to_string();
+    if reset_at.date_naive() == now.date_naive() {
+        Some(time)
+    } else {
+        Some(format!("{time} on {}", reset_at.format("%-d %b")))
     }
-    let duration = duration.to_std().ok()?;
-    Some(format_duration(duration, DurationStyle::ResetTimer))
 }
 
 fn format_usage_line(line: &UsageLine, dim: bool, use_color: bool) -> String {
@@ -601,26 +588,6 @@ where
         }
     }
     true
-}
-
-enum DurationStyle {
-    ResetTimer,
-}
-
-fn format_duration(duration: Duration, style: DurationStyle) -> String {
-    let secs = duration.as_secs();
-    let (value, unit) = if secs < 60 {
-        (secs, "s")
-    } else if secs < 60 * 60 {
-        (secs / 60, "m")
-    } else if secs < 60 * 60 * 24 {
-        (secs / (60 * 60), "h")
-    } else {
-        (secs / (60 * 60 * 24), "d")
-    };
-    match style {
-        DurationStyle::ResetTimer => format!("in {value}{unit}"),
-    }
 }
 
 fn local_from_timestamp(ts: i64) -> Option<DateTime<Local>> {
@@ -751,7 +718,7 @@ mod tests {
             rate_limit: None,
             additional_rate_limits: None,
         };
-        let limits = build_usage_limits(&payload, Local::now());
+        let limits = build_usage_limits(&payload);
         assert!(limits.five_hour.is_none());
 
         let window = RateLimitWindowSnapshot {
@@ -767,7 +734,7 @@ mod tests {
             rate_limit: Some(rate_limit),
             additional_rate_limits: None,
         };
-        let limits = build_usage_limits(&payload, Local::now());
+        let limits = build_usage_limits(&payload);
         assert!(limits.five_hour.is_some());
         let line = format_limit(limits.five_hour.as_ref(), Local::now(), "none");
         assert!(line.left_percent.is_some());
@@ -791,7 +758,7 @@ mod tests {
                 }),
             }]),
         };
-        let limits = build_usage_limits(&payload, Local::now());
+        let limits = build_usage_limits(&payload);
         assert!(limits.five_hour.is_some());
     }
 
@@ -851,8 +818,8 @@ mod tests {
             additional_rate_limits: None,
         };
         let lines = usage_lines_from_payload(&payload, "unavailable", now);
-        assert!(lines.iter().any(|line| line.starts_with("5h: ")));
-        assert!(lines.iter().any(|line| line.starts_with("weekly: ")));
+        assert!(lines.iter().any(|line| line.starts_with("5 hour: ")));
+        assert!(lines.iter().any(|line| line.starts_with("Weekly: ")));
     }
 
     #[test]
@@ -898,11 +865,20 @@ mod tests {
     }
 
     #[test]
-    fn format_duration_helpers() {
-        assert_eq!(
-            format_duration(Duration::from_secs(60), DurationStyle::ResetTimer),
-            "in 1m"
-        );
+    fn format_reset_timestamp_helpers() {
+        use chrono::Timelike;
+        let now = Local::now()
+            .with_hour(12)
+            .and_then(|value| value.with_minute(0))
+            .and_then(|value| value.with_second(0))
+            .and_then(|value| value.with_nanosecond(0))
+            .expect("valid midday");
+        let same_day = format_reset_timestamp(now.timestamp() + 60, now).expect("same day");
+        let cross_day =
+            format_reset_timestamp(now.timestamp() + 60 * 60 * 24, now).expect("cross day");
+        assert!(same_day.contains(':'));
+        assert!(!same_day.contains(" on "));
+        assert!(cross_day.contains(" on "));
         assert!(local_from_timestamp(0).is_some());
         assert!(local_from_timestamp(-1).is_some());
     }
