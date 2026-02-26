@@ -228,9 +228,9 @@ fn format_label(label: Option<&str>, use_color: bool) -> String {
 
 fn format_email_badge(email: &str, is_current: bool) -> String {
     if is_current {
-        format!(" {email} ").white().on_green().to_string()
+        format!(" {email} ").green().on_white().to_string()
     } else {
-        format!(" {email} ").white().on_magenta().to_string()
+        format!(" {email} ").magenta().on_white().to_string()
     }
 }
 
