@@ -708,6 +708,36 @@ fn ui_status_all_command() {
 }
 
 #[test]
+fn ui_status_all_renders_grouped_multi_bucket_windows() {
+    let env = TestEnv::new();
+    seed_profiles(&env);
+    let usage_body = r#"{
+        "rate_limit":{
+            "primary_window":{"used_percent":20,"limit_window_seconds":18000,"reset_at":2000000000},
+            "secondary_window":{"used_percent":50,"limit_window_seconds":604800,"reset_at":2000600000}
+        },
+        "additional_rate_limits":[
+            {
+                "limit_name":"codex_other",
+                "metered_feature":"codex_other",
+                "rate_limit":{
+                    "primary_window":{"used_percent":40,"limit_window_seconds":3600,"reset_at":2000001200}
+                }
+            }
+        ]
+    }"#;
+    let (usage_addr, usage_handle) = start_usage_server(usage_body, 6).expect("usage server");
+    env.write_config(&format!("http://{usage_addr}/backend-api"));
+
+    let output = env.run(&["status", "--all"]);
+    assert!(output.contains("codex"));
+    assert!(output.contains("primary:"));
+    assert!(output.contains("secondary:"));
+    assert!(output.contains("codex_other"));
+    let _ = usage_handle.join();
+}
+
+#[test]
 fn ui_status_all_unsaved_free_profile_shows_warning() {
     let env = TestEnv::new();
     seed_alpha(&env);

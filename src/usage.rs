@@ -90,6 +90,8 @@ impl std::fmt::Display for UsageFetchError {
 struct UsagePayload {
     #[serde(default)]
     rate_limit: Option<RateLimitDetails>,
+    #[serde(default)]
+    additional_rate_limits: Option<Vec<AdditionalRateLimitDetails>>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -101,10 +103,27 @@ struct RateLimitDetails {
 }
 
 #[derive(Clone, Debug, Deserialize)]
+struct AdditionalRateLimitDetails {
+    #[serde(default)]
+    limit_name: Option<String>,
+    #[serde(default)]
+    metered_feature: Option<String>,
+    #[serde(default)]
+    rate_limit: Option<RateLimitDetails>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
 struct RateLimitWindowSnapshot {
     used_percent: f64,
     limit_window_seconds: i64,
     reset_at: i64,
+}
+
+#[derive(Clone, Debug)]
+struct UsageBucket {
+    limit_id: String,
+    label: String,
+    rate_limit: Option<RateLimitDetails>,
 }
 
 pub fn read_base_url(paths: &Paths) -> String {
@@ -212,17 +231,133 @@ pub fn fetch_usage_details(
     now: DateTime<Local>,
 ) -> Result<Vec<String>, UsageFetchError> {
     let payload = fetch_usage_payload(base_url, access_token, account_id)?;
-    let limits = build_usage_limits(&payload, now);
-    Ok(format_usage(
-        format_limit(limits.five_hour.as_ref(), now, unavailable_text),
-        format_limit(limits.weekly.as_ref(), now, unavailable_text),
-        unavailable_text,
-    ))
+    Ok(usage_lines_from_payload(&payload, unavailable_text, now))
 }
 
+#[cfg(test)]
 fn build_usage_limits(payload: &UsagePayload, now: DateTime<Local>) -> UsageLimits {
+    let buckets = ordered_usage_buckets(usage_buckets(payload));
+    let Some(preferred_bucket) = buckets.first() else {
+        return UsageLimits::default();
+    };
+    build_usage_limits_for_rate_limit(preferred_bucket.rate_limit.as_ref(), now)
+}
+
+fn usage_lines_from_payload(
+    payload: &UsagePayload,
+    unavailable_text: &str,
+    now: DateTime<Local>,
+) -> Vec<String> {
+    let buckets = ordered_usage_buckets(usage_buckets(payload));
+    if buckets.is_empty() {
+        return vec![format_usage_unavailable(
+            unavailable_text,
+            use_color_stdout(),
+        )];
+    }
+    let multi_bucket = buckets.len() > 1;
+    let mut lines = Vec::new();
+    for bucket in buckets {
+        let limits = build_usage_limits_for_rate_limit(bucket.rate_limit.as_ref(), now);
+        let has_data = limits.five_hour.is_some() || limits.weekly.is_some();
+        if !has_data {
+            continue;
+        }
+        let mut bucket_lines = format_usage(
+            format_limit(limits.five_hour.as_ref(), now, unavailable_text),
+            format_limit(limits.weekly.as_ref(), now, unavailable_text),
+            unavailable_text,
+        );
+        if limits.five_hour.is_some() && limits.weekly.is_some() {
+            bucket_lines = label_dual_window_lines(bucket_lines);
+        }
+        if multi_bucket {
+            let label = usage_bucket_label(&bucket);
+            lines.push(label.to_string());
+            lines.extend(bucket_lines.into_iter().map(|line| format!("  {line}")));
+        } else {
+            lines.extend(bucket_lines);
+        }
+    }
+    if lines.is_empty() {
+        vec![format_usage_unavailable(
+            unavailable_text,
+            use_color_stdout(),
+        )]
+    } else {
+        lines
+    }
+}
+
+fn label_dual_window_lines(mut lines: Vec<String>) -> Vec<String> {
+    if let Some(first) = lines.get_mut(0) {
+        *first = format!("primary: {first}");
+    }
+    if let Some(second) = lines.get_mut(1) {
+        *second = format!("secondary: {second}");
+    }
+    lines
+}
+
+fn usage_buckets(payload: &UsagePayload) -> Vec<UsageBucket> {
+    let mut buckets = Vec::new();
+    if let Some(rate_limit) = payload.rate_limit.clone() {
+        buckets.push(UsageBucket {
+            limit_id: "codex".to_string(),
+            label: "codex".to_string(),
+            rate_limit: Some(rate_limit),
+        });
+    }
+    if let Some(additional) = payload.additional_rate_limits.as_ref() {
+        buckets.extend(additional.iter().map(|details| {
+            let limit_id = details
+                .metered_feature
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("unknown")
+                .to_string();
+            let label = details
+                .limit_name
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or(limit_id.as_str())
+                .to_string();
+            UsageBucket {
+                limit_id,
+                label,
+                rate_limit: details.rate_limit.clone(),
+            }
+        }));
+    }
+    buckets
+}
+
+fn ordered_usage_buckets(mut buckets: Vec<UsageBucket>) -> Vec<UsageBucket> {
+    if let Some(index) = buckets.iter().position(|bucket| bucket.limit_id == "codex") {
+        if index != 0 {
+            let preferred = buckets.remove(index);
+            buckets.insert(0, preferred);
+        }
+    }
+    buckets
+}
+
+fn usage_bucket_label(bucket: &UsageBucket) -> &str {
+    if bucket.label.trim().is_empty() {
+        "unknown"
+    } else {
+        bucket.label.as_str()
+    }
+}
+
+fn build_usage_limits_for_rate_limit(
+    rate_limit: Option<&RateLimitDetails>,
+    now: DateTime<Local>,
+) -> UsageLimits {
     let mut limits = UsageLimits::default();
-    let Some(rate_limit) = payload.rate_limit.as_ref() else {
+    let Some(rate_limit) = rate_limit else {
         return limits;
     };
     let mut windows: Vec<(i64, UsageWindow)> = [
@@ -612,7 +747,10 @@ mod tests {
 
     #[test]
     fn usage_limits_and_formatting() {
-        let payload = UsagePayload { rate_limit: None };
+        let payload = UsagePayload {
+            rate_limit: None,
+            additional_rate_limits: None,
+        };
         let limits = build_usage_limits(&payload, Local::now());
         assert!(limits.five_hour.is_none());
 
@@ -627,11 +765,94 @@ mod tests {
         };
         let payload = UsagePayload {
             rate_limit: Some(rate_limit),
+            additional_rate_limits: None,
         };
         let limits = build_usage_limits(&payload, Local::now());
         assert!(limits.five_hour.is_some());
         let line = format_limit(limits.five_hour.as_ref(), Local::now(), "none");
         assert!(line.left_percent.is_some());
+    }
+
+    #[test]
+    fn usage_limits_fallback_to_additional_bucket_when_primary_missing() {
+        let window = RateLimitWindowSnapshot {
+            used_percent: 25.0,
+            limit_window_seconds: 900,
+            reset_at: Local::now().timestamp(),
+        };
+        let payload = UsagePayload {
+            rate_limit: None,
+            additional_rate_limits: Some(vec![AdditionalRateLimitDetails {
+                limit_name: Some("codex_other".to_string()),
+                metered_feature: Some("codex_other".to_string()),
+                rate_limit: Some(RateLimitDetails {
+                    primary_window: Some(window),
+                    secondary_window: None,
+                }),
+            }]),
+        };
+        let limits = build_usage_limits(&payload, Local::now());
+        assert!(limits.five_hour.is_some());
+    }
+
+    #[test]
+    fn usage_lines_include_multi_bucket_labels() {
+        let _plain = set_plain_guard(true);
+        let now = Local::now();
+        let payload = UsagePayload {
+            rate_limit: Some(RateLimitDetails {
+                primary_window: Some(RateLimitWindowSnapshot {
+                    used_percent: 20.0,
+                    limit_window_seconds: 18000,
+                    reset_at: now.timestamp() + 600,
+                }),
+                secondary_window: None,
+            }),
+            additional_rate_limits: Some(vec![AdditionalRateLimitDetails {
+                limit_name: Some("codex_other".to_string()),
+                metered_feature: Some("codex_other".to_string()),
+                rate_limit: Some(RateLimitDetails {
+                    primary_window: Some(RateLimitWindowSnapshot {
+                        used_percent: 60.0,
+                        limit_window_seconds: 3600,
+                        reset_at: now.timestamp() + 900,
+                    }),
+                    secondary_window: None,
+                }),
+            }]),
+        };
+        let lines = usage_lines_from_payload(&payload, "unavailable", now);
+        assert!(lines.iter().any(|line| line == "codex"));
+        assert!(lines.iter().any(|line| line == "codex_other"));
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.starts_with("  ") && line.contains("left"))
+        );
+    }
+
+    #[test]
+    fn usage_lines_label_dual_windows_for_single_bucket() {
+        let _plain = set_plain_guard(true);
+        let now = Local::now();
+        let payload = UsagePayload {
+            rate_limit: Some(RateLimitDetails {
+                primary_window: Some(RateLimitWindowSnapshot {
+                    used_percent: 20.0,
+                    limit_window_seconds: 18000,
+                    reset_at: now.timestamp() + 600,
+                }),
+                secondary_window: Some(RateLimitWindowSnapshot {
+                    used_percent: 50.0,
+                    limit_window_seconds: 604800,
+                    reset_at: now.timestamp() + 3600,
+                }),
+            }),
+            additional_rate_limits: None,
+        };
+        let lines = usage_lines_from_payload(&payload, "unavailable", now);
+        assert!(lines.iter().any(|line| line.starts_with("primary: ")));
+        assert!(lines.iter().any(|line| line.starts_with("secondary: ")));
     }
 
     #[test]

@@ -10,13 +10,14 @@ use std::io::{self, IsTerminal as _};
 use std::path::{Path, PathBuf};
 
 use crate::{
-    AUTH_ERR_INCOMPLETE_ACCOUNT, AUTH_ERR_PROFILE_MISSING_EMAIL_PLAN, PROFILE_COPY_CONTEXT_LOAD,
-    PROFILE_COPY_CONTEXT_SAVE, PROFILE_DELETE_HELP, PROFILE_ERR_COPY_CONTEXT,
-    PROFILE_ERR_CURRENT_NOT_SAVED, PROFILE_ERR_DELETE_CONFIRM_REQUIRED, PROFILE_ERR_FAILED_DELETE,
-    PROFILE_ERR_ID_NOT_FOUND, PROFILE_ERR_INDEX_INVALID_JSON, PROFILE_ERR_LABEL_EMPTY,
-    PROFILE_ERR_LABEL_EXISTS, PROFILE_ERR_LABEL_NO_MATCH, PROFILE_ERR_LABEL_NOT_FOUND,
-    PROFILE_ERR_PROMPT_CONTEXT, PROFILE_ERR_PROMPT_DELETE, PROFILE_ERR_PROMPT_LOAD,
-    PROFILE_ERR_READ_INDEX, PROFILE_ERR_READ_PROFILES_DIR, PROFILE_ERR_REFRESHED_ACCESS_MISSING,
+    AUTH_ERR_INCOMPLETE_ACCOUNT, AUTH_ERR_PROFILE_MISSING_ACCOUNT,
+    AUTH_ERR_PROFILE_MISSING_EMAIL_PLAN, PROFILE_COPY_CONTEXT_LOAD, PROFILE_COPY_CONTEXT_SAVE,
+    PROFILE_DELETE_HELP, PROFILE_ERR_COPY_CONTEXT, PROFILE_ERR_CURRENT_NOT_SAVED,
+    PROFILE_ERR_DELETE_CONFIRM_REQUIRED, PROFILE_ERR_FAILED_DELETE, PROFILE_ERR_ID_NOT_FOUND,
+    PROFILE_ERR_INDEX_INVALID_JSON, PROFILE_ERR_LABEL_EMPTY, PROFILE_ERR_LABEL_EXISTS,
+    PROFILE_ERR_LABEL_NO_MATCH, PROFILE_ERR_LABEL_NOT_FOUND, PROFILE_ERR_PROMPT_CONTEXT,
+    PROFILE_ERR_PROMPT_DELETE, PROFILE_ERR_PROMPT_LOAD, PROFILE_ERR_READ_INDEX,
+    PROFILE_ERR_READ_PROFILES_DIR, PROFILE_ERR_REFRESHED_ACCESS_MISSING,
     PROFILE_ERR_REMOVE_INVALID, PROFILE_ERR_RENAME_PROFILE, PROFILE_ERR_SELECTED_INVALID,
     PROFILE_ERR_SERIALIZE_INDEX, PROFILE_ERR_SYNC_CURRENT, PROFILE_ERR_TTY_REQUIRED,
     PROFILE_ERR_WRITE_INDEX, PROFILE_LOAD_HELP, PROFILE_MSG_DELETED_COUNT,
@@ -300,18 +301,23 @@ fn status_all_profiles(paths: &Paths, show_errors: bool) -> Result<(), String> {
     let mut hidden_api_count = 0usize;
     let mut hidden_error_count = 0usize;
     let mut list_entries = Vec::new();
-    let labels_by_id = labels_by_id(&snapshot.labels);
-    for id in filtered {
-        if is_api_saved_profile(&id, &snapshot) {
-            hidden_api_count += 1;
-            continue;
-        }
-        let entry = make_saved(&id, &snapshot, &labels_by_id, None, &ctx);
+    let non_api_ids: Vec<String> = filtered
+        .into_iter()
+        .filter(|id| {
+            if is_api_saved_profile(id, &snapshot) {
+                hidden_api_count += 1;
+                false
+            } else {
+                true
+            }
+        })
+        .collect();
+    for entry in make_entries(&non_api_ids, &snapshot, None, &ctx) {
         if !show_errors && entry.error_summary.is_some() {
             hidden_error_count += 1;
-            continue;
+        } else {
+            list_entries.push(entry);
         }
-        list_entries.push(entry);
     }
 
     let mut current_visible = None;
@@ -1312,7 +1318,7 @@ fn detail_lines(
     ctx: &ListCtx,
 ) -> (Vec<String>, Option<String>, bool) {
     let use_color = ctx.use_color;
-    let account_id = token_account_id(tokens).map(str::to_string);
+    let initial_account_id = token_account_id(tokens).map(str::to_string);
     let access_token = tokens.access_token.clone();
     if is_api_key_profile(tokens) {
         if ctx.show_usage {
@@ -1330,7 +1336,7 @@ fn detail_lines(
     }
     let unavailable_text = usage_unavailable();
     if let Some(message) = profile_error(tokens, email, plan) {
-        let missing_access = access_token.is_none() || account_id.is_none();
+        let missing_access = access_token.is_none() || initial_account_id.is_none();
         let missing_identity_only =
             message == AUTH_ERR_PROFILE_MISSING_EMAIL_PLAN && !missing_access;
         if !missing_identity_only {
@@ -1349,7 +1355,7 @@ fn detail_lines(
         let Some(access_token) = access_token.as_deref() else {
             return (Vec::new(), None, false);
         };
-        let Some(account_id) = account_id.as_deref() else {
+        let Some(account_id) = initial_account_id.as_deref() else {
             return (Vec::new(), None, false);
         };
         match fetch_usage_details(
@@ -1365,6 +1371,14 @@ fn detail_lines(
                     Ok(()) => {
                         let Some(access_token) = tokens.access_token.as_deref() else {
                             let message = PROFILE_ERR_REFRESHED_ACCESS_MISSING;
+                            return (
+                                vec![format_error(message)],
+                                Some(error_summary(PROFILE_SUMMARY_AUTH_ERROR, message)),
+                                true,
+                            );
+                        };
+                        let Some(account_id) = token_account_id(tokens) else {
+                            let message = AUTH_ERR_PROFILE_MISSING_ACCOUNT;
                             return (
                                 vec![format_error(message)],
                                 Some(error_summary(PROFILE_SUMMARY_AUTH_ERROR, message)),

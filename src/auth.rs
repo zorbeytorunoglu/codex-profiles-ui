@@ -235,6 +235,16 @@ pub fn extract_profile_identity(tokens: &Tokens) -> Option<ProfileIdentityKey> {
     })
 }
 
+fn account_id_from_id_token(id_token: &str) -> Option<String> {
+    let claims = decode_id_token_claims(id_token)?;
+    let workspace = claims
+        .auth
+        .and_then(|auth| auth.chatgpt_account_id)
+        .or(claims.organization_id)
+        .or(claims.project_id)?;
+    normalize_identity_value(&workspace)
+}
+
 fn normalize_identity_value(value: &str) -> Option<String> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
@@ -488,6 +498,9 @@ fn apply_refresh(tokens: &mut Tokens, refreshed: &RefreshResponse) -> Result<(),
     tokens.access_token = Some(access_token.clone());
     if let Some(id_token) = refreshed.id_token.as_ref() {
         tokens.id_token = Some(id_token.clone());
+        if let Some(account_id) = account_id_from_id_token(id_token) {
+            tokens.account_id = Some(account_id);
+        }
     }
     if let Some(refresh_token) = refreshed.refresh_token.as_ref() {
         tokens.refresh_token = Some(refresh_token.clone());
@@ -514,6 +527,12 @@ fn update_auth_tokens(path: &Path, refreshed: &RefreshResponse) -> Result<(), St
             "id_token".to_string(),
             serde_json::Value::String(id_token.clone()),
         );
+        if let Some(account_id) = account_id_from_id_token(id_token) {
+            tokens_map.insert(
+                "account_id".to_string(),
+                serde_json::Value::String(account_id),
+            );
+        }
     }
     if let Some(access_token) = refreshed.access_token.as_ref() {
         tokens_map.insert(
@@ -848,6 +867,39 @@ mod tests {
     }
 
     #[test]
+    fn account_id_from_id_token_prefers_workspace_claim() {
+        let id_token = build_id_token_payload(
+            "{\"https://api.openai.com/auth\":{\"chatgpt_account_id\":\"ws-123\"},\"organization_id\":\"org-123\"}",
+        );
+        assert_eq!(
+            account_id_from_id_token(&id_token).as_deref(),
+            Some("ws-123")
+        );
+    }
+
+    #[test]
+    fn apply_refresh_updates_account_id_from_refreshed_id_token() {
+        let mut tokens = Tokens {
+            account_id: Some("acct-old".to_string()),
+            id_token: Some(build_id_token("me@example.com", "pro")),
+            access_token: Some("old-access".to_string()),
+            refresh_token: Some("old-refresh".to_string()),
+        };
+        let refreshed_id_token = build_id_token_payload(
+            "{\"https://api.openai.com/auth\":{\"chatgpt_account_id\":\"ws-new\",\"chatgpt_plan_type\":\"pro\"}}",
+        );
+        let refreshed = RefreshResponse {
+            id_token: Some(refreshed_id_token),
+            access_token: Some("new-access".to_string()),
+            refresh_token: Some("new-refresh".to_string()),
+        };
+        apply_refresh(&mut tokens, &refreshed).unwrap();
+        assert_eq!(tokens.account_id.as_deref(), Some("ws-new"));
+        assert_eq!(tokens.access_token.as_deref(), Some("new-access"));
+        assert_eq!(tokens.refresh_token.as_deref(), Some("new-refresh"));
+    }
+
+    #[test]
     fn update_auth_tokens_errors() {
         let dir = tempfile::tempdir().expect("tempdir");
         let missing = dir.path().join("missing.json");
@@ -900,6 +952,34 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.contains("Invalid tokens"));
+    }
+
+    #[test]
+    fn update_auth_tokens_writes_account_id_from_refreshed_id_token() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("auth.json");
+        let value = serde_json::json!({
+            "tokens": {
+                "account_id": "acct-old",
+                "access_token": "old-access",
+            }
+        });
+        fs::write(&path, serde_json::to_string(&value).unwrap()).unwrap();
+        let refreshed_id_token = build_id_token_payload(
+            "{\"https://api.openai.com/auth\":{\"chatgpt_account_id\":\"ws-fresh\",\"chatgpt_plan_type\":\"pro\"}}",
+        );
+        update_auth_tokens(
+            &path,
+            &RefreshResponse {
+                id_token: Some(refreshed_id_token),
+                access_token: Some("new-access".to_string()),
+                refresh_token: Some("new-refresh".to_string()),
+            },
+        )
+        .unwrap();
+        let updated = fs::read_to_string(&path).unwrap();
+        assert!(updated.contains("\"account_id\": \"ws-fresh\""));
+        assert!(updated.contains("\"access_token\": \"new-access\""));
     }
 
     #[test]
