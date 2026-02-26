@@ -209,7 +209,7 @@ pub fn delete_profile(paths: &Paths, yes: bool, label: Option<String>) -> Result
 pub fn list_profiles(paths: &Paths) -> Result<(), String> {
     let snapshot = load_snapshot(paths, false)?;
     let current_saved_id = current_saved_id(paths, &snapshot.tokens);
-    let ctx = ListCtx::new(paths, false);
+    let ctx = ListCtx::new(paths, false, false);
 
     let ordered = ordered_from_tokens(&snapshot.tokens);
     let current_entry = make_current(
@@ -258,7 +258,7 @@ pub fn status_profiles(paths: &Paths, all: bool, show_errors: bool) -> Result<()
     let current_saved_id = snapshot
         .as_ref()
         .and_then(|snap| current_saved_id(paths, &snap.tokens));
-    let ctx = ListCtx::new(paths, true);
+    let ctx = ListCtx::new(paths, true, false);
     let empty_labels = Labels::new();
     let labels = snapshot
         .as_ref()
@@ -283,7 +283,7 @@ pub fn status_profiles(paths: &Paths, all: bool, show_errors: bool) -> Result<()
 fn status_all_profiles(paths: &Paths, show_errors: bool) -> Result<(), String> {
     let snapshot = load_snapshot(paths, false)?;
     let current_saved_id = current_saved_id(paths, &snapshot.tokens);
-    let ctx = ListCtx::new(paths, true);
+    let ctx = ListCtx::new(paths, true, true);
 
     let ordered = ordered_from_tokens(&snapshot.tokens);
     let current_entry = make_current(
@@ -1261,11 +1261,15 @@ impl fmt::Display for Candidate {
 fn render_entries(entries: &[Entry], ctx: &ListCtx, allow_plain_spacing: bool) -> Vec<String> {
     let mut lines = Vec::with_capacity((entries.len().max(1)) * 4);
     for (idx, entry) in entries.iter().enumerate() {
-        let header = format_entry_header(&entry.display, ctx.use_color);
+        let mut header = format_entry_header(&entry.display, ctx.use_color);
+        if ctx.show_current_marker && entry.is_current {
+            header.push_str(&style_text(" <- current profile", ctx.use_color, |text| {
+                text.dimmed().italic()
+            }));
+        }
         let show_detail_lines = ctx.show_usage || entry.always_show_details;
         if !show_detail_lines {
             if let Some(err) = entry.error_summary.as_deref() {
-                let mut header = header;
                 header.push_str(&format!("  {err}"));
                 lines.push(header);
             } else {
@@ -1303,6 +1307,7 @@ fn make_error(
         details: vec![format_error(message)],
         error_summary: Some(error_summary(summary_label, message)),
         always_show_details: false,
+        is_current,
     }
 }
 
@@ -1470,6 +1475,7 @@ fn make_entry(
         details,
         error_summary: summary,
         always_show_details: info.is_free,
+        is_current,
     }
 }
 
@@ -1591,6 +1597,7 @@ fn make_current(
         details,
         error_summary: summary,
         always_show_details: is_unsaved || (plan_is_free && !ctx.show_usage),
+        is_current: true,
     })
 }
 
@@ -1602,17 +1609,19 @@ struct ListCtx {
     base_url: Option<String>,
     now: DateTime<Local>,
     show_usage: bool,
+    show_current_marker: bool,
     use_color: bool,
     profiles_dir: PathBuf,
     auth_path: PathBuf,
 }
 
 impl ListCtx {
-    fn new(paths: &Paths, show_usage: bool) -> Self {
+    fn new(paths: &Paths, show_usage: bool, show_current_marker: bool) -> Self {
         Self {
             base_url: show_usage.then(|| read_base_url(paths)),
             now: Local::now(),
             show_usage,
+            show_current_marker,
             use_color: use_color_stdout(),
             profiles_dir: paths.profiles.clone(),
             auth_path: paths.auth.clone(),
@@ -1625,6 +1634,7 @@ struct Entry {
     details: Vec<String>,
     error_summary: Option<String>,
     always_show_details: bool,
+    is_current: bool,
 }
 
 fn handle_inquire_result<T>(
@@ -1989,11 +1999,13 @@ mod tests {
             details: vec!["detail".to_string()],
             error_summary: None,
             always_show_details: true,
+            is_current: false,
         };
         let ctx = ListCtx {
             base_url: None,
             now: chrono::Local::now(),
             show_usage: false,
+            show_current_marker: false,
             use_color: false,
             profiles_dir: PathBuf::new(),
             auth_path: PathBuf::new(),

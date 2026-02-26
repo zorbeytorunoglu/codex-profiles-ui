@@ -677,6 +677,7 @@ fn ui_status_command() {
     let output = env.run(&["status"]);
     assert!(output.contains("alpha@example.com"));
     assert!(!output.contains("beta@example.com"));
+    assert!(!output.contains("<- current profile"));
 }
 
 #[test]
@@ -704,6 +705,7 @@ fn ui_status_all_command() {
         &["alpha@example.com", "beta@example.com"],
     );
     let output = env.run(&["status", "--all", "--show-errors"]);
+    assert!(output.contains("<- current profile"));
     assert_order(&output, "alpha@example.com", "beta@example.com");
 }
 
