@@ -209,9 +209,9 @@ pub fn delete_profile(paths: &Paths, yes: bool, label: Option<String>) -> Result
 pub fn list_profiles(paths: &Paths) -> Result<(), String> {
     let snapshot = load_snapshot(paths, false)?;
     let current_saved_id = current_saved_id(paths, &snapshot.tokens);
-    let ctx = ListCtx::new(paths, false, false);
+    let ctx = ListCtx::new(paths, false, true);
 
-    let ordered = ordered_from_tokens(&snapshot.tokens);
+    let ordered = ordered_profile_ids(&snapshot, current_saved_id.as_deref());
     let current_entry = make_current(
         paths,
         current_saved_id.as_deref(),
@@ -285,7 +285,7 @@ fn status_all_profiles(paths: &Paths, show_errors: bool) -> Result<(), String> {
     let current_saved_id = current_saved_id(paths, &snapshot.tokens);
     let ctx = ListCtx::new(paths, true, true);
 
-    let ordered = ordered_from_tokens(&snapshot.tokens);
+    let ordered = ordered_profile_ids(&snapshot, current_saved_id.as_deref());
     let current_entry = make_current(
         paths,
         current_saved_id.as_deref(),
@@ -980,15 +980,76 @@ fn load_snapshot_ordered(
     no_profiles_message: &str,
 ) -> Result<(Snapshot, Vec<String>), String> {
     let snapshot = load_snapshot(paths, strict_labels)?;
-    let ordered = ordered_from_tokens(&snapshot.tokens);
+    let current_saved = current_saved_id(paths, &snapshot.tokens);
+    let ordered = ordered_profile_ids(&snapshot, current_saved.as_deref());
     if ordered.is_empty() {
         return Err(no_profiles_message.to_string());
     }
     Ok((snapshot, ordered))
 }
 
-fn ordered_from_tokens(tokens_map: &BTreeMap<String, Result<Tokens, String>>) -> Vec<String> {
-    tokens_map.keys().cloned().collect()
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct ProfileOrderKey {
+    current_rank: u8,
+    label_missing: bool,
+    label: String,
+    email_missing: bool,
+    email: String,
+    id: String,
+}
+
+fn ordered_profile_ids(snapshot: &Snapshot, current_saved_id: Option<&str>) -> Vec<String> {
+    let labels_by_id = labels_by_id(&snapshot.labels);
+    let mut keyed: Vec<(String, ProfileOrderKey)> = snapshot
+        .tokens
+        .keys()
+        .cloned()
+        .map(|id| {
+            let label = labels_by_id
+                .get(&id)
+                .cloned()
+                .or_else(|| {
+                    snapshot
+                        .index
+                        .profiles
+                        .get(&id)
+                        .and_then(|entry| entry.label.clone())
+                })
+                .map(|value| value.trim().to_ascii_lowercase())
+                .filter(|value| !value.is_empty())
+                .unwrap_or_default();
+            let email = snapshot
+                .tokens
+                .get(&id)
+                .and_then(|result| result.as_ref().ok())
+                .and_then(|tokens| extract_email_and_plan(tokens).0)
+                .or_else(|| {
+                    snapshot
+                        .index
+                        .profiles
+                        .get(&id)
+                        .and_then(|entry| entry.email.clone())
+                })
+                .map(|value| value.trim().to_ascii_lowercase())
+                .filter(|value| !value.is_empty())
+                .unwrap_or_default();
+            let key = ProfileOrderKey {
+                current_rank: if current_saved_id == Some(id.as_str()) {
+                    0
+                } else {
+                    1
+                },
+                label_missing: label.is_empty(),
+                label,
+                email_missing: email.is_empty(),
+                email,
+                id: id.to_ascii_lowercase(),
+            };
+            (id, key)
+        })
+        .collect();
+    keyed.sort_by(|left, right| left.1.cmp(&right.1));
+    keyed.into_iter().map(|(id, _)| id).collect()
 }
 
 fn copy_profile(source: &Path, dest: &Path, context: &str) -> Result<(), String> {
@@ -1138,9 +1199,14 @@ pub(crate) fn build_candidates(
         let index_entry = snapshot.index.profiles.get(id);
         let is_current = current_saved_id == Some(id.as_str());
         let info = profile_info_with_fallback(tokens, index_entry, label, is_current, use_color);
+        let marker = if is_current {
+            current_profile_marker(use_color)
+        } else {
+            String::new()
+        };
         candidates.push(Candidate {
             id: id.clone(),
-            display: info.display,
+            display: format!("{}{}", info.display, marker),
         });
     }
     candidates
@@ -1263,9 +1329,7 @@ fn render_entries(entries: &[Entry], ctx: &ListCtx, allow_plain_spacing: bool) -
     for (idx, entry) in entries.iter().enumerate() {
         let mut header = format_entry_header(&entry.display, ctx.use_color);
         if ctx.show_current_marker && entry.is_current {
-            header.push_str(&style_text(" <- current profile", ctx.use_color, |text| {
-                text.dimmed().italic()
-            }));
+            header.push_str(&current_profile_marker(ctx.use_color));
         }
         let show_detail_lines = ctx.show_usage || entry.always_show_details;
         if !show_detail_lines {
@@ -1290,6 +1354,12 @@ fn push_separator(lines: &mut Vec<String>, allow_plain_spacing: bool) {
     if !is_plain() || allow_plain_spacing {
         lines.push(String::new());
     }
+}
+
+fn current_profile_marker(use_color: bool) -> String {
+    style_text(" <- current profile", use_color, |text| {
+        text.dimmed().italic()
+    })
 }
 
 fn make_error(
@@ -1759,6 +1829,15 @@ mod tests {
         }
     }
 
+    fn make_tokens(account_id: &str, email: &str, plan: &str) -> Tokens {
+        Tokens {
+            account_id: Some(account_id.to_string()),
+            id_token: Some(build_id_token(email, plan)),
+            access_token: Some("acc".to_string()),
+            refresh_token: Some("ref".to_string()),
+        }
+    }
+
     #[test]
     fn require_tty_with_variants() {
         assert!(require_tty_with(true, "load").is_ok());
@@ -1824,6 +1903,44 @@ mod tests {
         remove_labels_for_id(&mut labels, "id");
         assert!(labels.is_empty());
         assert!(trim_label(" ").is_err());
+    }
+
+    #[test]
+    fn ordered_profile_ids_prefers_current_then_label_then_email() {
+        let mut labels = Labels::new();
+        labels.insert("alpha".to_string(), "id-a".to_string());
+        labels.insert("beta".to_string(), "id-b".to_string());
+        labels.insert("zeta".to_string(), "id-z".to_string());
+
+        let mut tokens = BTreeMap::new();
+        tokens.insert(
+            "id-z".to_string(),
+            Ok(make_tokens("acct-z", "z@ex.com", "team")),
+        );
+        tokens.insert(
+            "id-a".to_string(),
+            Ok(make_tokens("acct-a", "a@ex.com", "team")),
+        );
+        tokens.insert(
+            "id-u1".to_string(),
+            Ok(make_tokens("acct-u1", "c@ex.com", "team")),
+        );
+        tokens.insert(
+            "id-u2".to_string(),
+            Ok(make_tokens("acct-u2", "b@ex.com", "team")),
+        );
+        tokens.insert(
+            "id-b".to_string(),
+            Ok(make_tokens("acct-b", "d@ex.com", "team")),
+        );
+
+        let snapshot = Snapshot {
+            labels,
+            tokens,
+            index: ProfilesIndex::default(),
+        };
+        let ordered = ordered_profile_ids(&snapshot, Some("id-z"));
+        assert_eq!(ordered, vec!["id-z", "id-a", "id-b", "id-u2", "id-u1"]);
     }
 
     #[test]

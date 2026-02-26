@@ -485,6 +485,15 @@ fn ui_load_command() {
 }
 
 #[test]
+fn ui_load_current_profile_marks_current() {
+    let env = TestEnv::new();
+    seed_profiles(&env);
+    seed_alpha(&env);
+    let output = env.run(&["load", "--label", "alpha"]);
+    assert!(output.contains("<- current profile"));
+}
+
+#[test]
 fn ui_load_label_not_found() {
     let env = TestEnv::new();
     seed_profiles(&env);
@@ -539,6 +548,15 @@ fn ui_delete_command() {
 }
 
 #[test]
+fn ui_delete_current_profile_marks_current() {
+    let env = TestEnv::new();
+    seed_profiles(&env);
+    seed_alpha(&env);
+    let output = env.run(&["delete", "--label", "alpha", "--yes"]);
+    assert!(output.contains("<- current profile"));
+}
+
+#[test]
 fn ui_delete_requires_tty() {
     let env = TestEnv::new();
     seed_profiles(&env);
@@ -584,6 +602,7 @@ fn ui_list_command() {
     seed_current(&env);
     let output = env.run(&["list"]);
     assert!(output.contains("current@example.com"));
+    assert!(output.contains("<- current profile"));
     assert!(output.contains("Warning: This profile is not saved yet."));
     assert!(output.contains("Run `codex-profiles save` to save this profile."));
     assert!(output.contains("alpha@example.com"));
