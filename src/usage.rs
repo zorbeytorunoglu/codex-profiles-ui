@@ -395,11 +395,11 @@ fn usage_buckets(payload: &UsagePayload) -> Vec<UsageBucket> {
 }
 
 fn ordered_usage_buckets(mut buckets: Vec<UsageBucket>) -> Vec<UsageBucket> {
-    if let Some(index) = buckets.iter().position(|bucket| bucket.limit_id == "codex") {
-        if index != 0 {
-            let preferred = buckets.remove(index);
-            buckets.insert(0, preferred);
-        }
+    if let Some(index) = buckets.iter().position(|bucket| bucket.limit_id == "codex")
+        && index != 0
+    {
+        let preferred = buckets.remove(index);
+        buckets.insert(0, preferred);
     }
     buckets
 }
