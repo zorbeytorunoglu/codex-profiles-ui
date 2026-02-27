@@ -9,6 +9,7 @@ use std::fmt;
 use std::fs;
 use std::io::{self, IsTerminal as _};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use crate::{
     AUTH_ERR_INCOMPLETE_ACCOUNT, AUTH_ERR_PROFILE_MISSING_ACCOUNT,
@@ -53,6 +54,9 @@ use crate::{
 const DEFAULT_USAGE_CONCURRENCY: usize = 32;
 const MAX_USAGE_CONCURRENCY: usize = 128;
 const USAGE_CONCURRENCY_ENV: &str = "CODEX_PROFILES_USAGE_CONCURRENCY";
+const USAGE_CACHE_FILE: &str = "usage-cache.json";
+const USAGE_CACHE_TTL_SEC_DEFAULT: i64 = 20;
+const USAGE_CACHE_TTL_SEC_ENV: &str = "CODEX_PROFILES_USAGE_CACHE_TTL_SEC";
 
 pub fn save_profile(paths: &Paths, label: Option<String>) -> Result<(), String> {
     let use_color = use_color_stdout();
@@ -280,6 +284,7 @@ pub fn status_profiles(paths: &Paths, all: bool, show_errors: bool) -> Result<()
         let message = format_no_profiles(paths, ctx.use_color);
         print_output_block(&message);
     }
+    ctx.flush_usage_cache();
     Ok(())
 }
 
@@ -289,13 +294,6 @@ fn status_all_profiles(paths: &Paths, show_errors: bool) -> Result<(), String> {
     let ctx = ListCtx::new(paths, true, true);
 
     let ordered = ordered_profile_ids(&snapshot, current_saved_id.as_deref());
-    let current_entry = make_current(
-        paths,
-        current_saved_id.as_deref(),
-        &snapshot.labels,
-        &snapshot.tokens,
-        &ctx,
-    );
     let filtered: Vec<String> = ordered
         .into_iter()
         .filter(|id| current_saved_id.as_deref() != Some(id.as_str()))
@@ -315,7 +313,19 @@ fn status_all_profiles(paths: &Paths, show_errors: bool) -> Result<(), String> {
             }
         })
         .collect();
-    for entry in make_entries(&non_api_ids, &snapshot, None, &ctx) {
+    let (current_entry, non_current_entries) = rayon::join(
+        || {
+            make_current(
+                paths,
+                current_saved_id.as_deref(),
+                &snapshot.labels,
+                &snapshot.tokens,
+                &ctx,
+            )
+        },
+        || make_entries(&non_api_ids, &snapshot, None, &ctx),
+    );
+    for entry in non_current_entries {
         if !show_errors && entry.error_summary.is_some() {
             hidden_error_count += 1;
         } else {
@@ -377,6 +387,7 @@ fn status_all_profiles(paths: &Paths, show_errors: bool) -> Result<(), String> {
 
     let output = lines.join("\n");
     print_output_block(&output);
+    ctx.flush_usage_cache();
     Ok(())
 }
 
@@ -1388,6 +1399,93 @@ fn unavailable_lines(message: &str, use_color: bool) -> Vec<String> {
     vec![format_usage_unavailable(message, use_color)]
 }
 
+#[derive(Clone, Default, Deserialize, Serialize)]
+struct UsageCacheFile {
+    #[serde(default)]
+    entries: BTreeMap<String, UsageCacheEntry>,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+struct UsageCacheEntry {
+    fetched_at: i64,
+    lines: Vec<String>,
+}
+
+#[derive(Clone)]
+struct UsageCache {
+    state: Arc<Mutex<UsageCacheFile>>,
+    path: PathBuf,
+    ttl_secs: i64,
+}
+
+impl UsageCache {
+    fn load(path: PathBuf, ttl_secs: i64) -> Self {
+        let state = fs::read_to_string(&path)
+            .ok()
+            .and_then(|contents| serde_json::from_str::<UsageCacheFile>(&contents).ok())
+            .unwrap_or_default();
+        Self {
+            state: Arc::new(Mutex::new(state)),
+            path,
+            ttl_secs,
+        }
+    }
+
+    fn key(base_url: &str, account_id: &str, use_color: bool) -> String {
+        let mode = if use_color { "color" } else { "plain" };
+        format!("{base_url}|{account_id}|{mode}")
+    }
+
+    fn get(
+        &self,
+        base_url: &str,
+        account_id: &str,
+        use_color: bool,
+        now: DateTime<Local>,
+    ) -> Option<Vec<String>> {
+        let key = Self::key(base_url, account_id, use_color);
+        let now_ts = now.timestamp();
+        let mut state = self.state.lock().ok()?;
+        let entry = state.entries.get(&key).cloned()?;
+        if now_ts.saturating_sub(entry.fetched_at) > self.ttl_secs {
+            state.entries.remove(&key);
+            return None;
+        }
+        Some(entry.lines)
+    }
+
+    fn put(
+        &self,
+        base_url: &str,
+        account_id: &str,
+        use_color: bool,
+        now: DateTime<Local>,
+        lines: &[String],
+    ) {
+        if let Ok(mut state) = self.state.lock() {
+            state.entries.insert(
+                Self::key(base_url, account_id, use_color),
+                UsageCacheEntry {
+                    fetched_at: now.timestamp(),
+                    lines: lines.to_vec(),
+                },
+            );
+        }
+    }
+
+    fn flush(&self, now: DateTime<Local>) {
+        let now_ts = now.timestamp();
+        if let Ok(mut state) = self.state.lock() {
+            state
+                .entries
+                .retain(|_, entry| now_ts.saturating_sub(entry.fetched_at) <= self.ttl_secs);
+            if let Ok(contents) = serde_json::to_string_pretty(&*state) {
+                let _ = write_atomic(&self.path, format!("{contents}\n").as_bytes());
+            }
+        }
+    }
+}
+
 fn detail_lines(
     tokens: &mut Tokens,
     email: Option<&str>,
@@ -1436,6 +1534,11 @@ fn detail_lines(
         let Some(account_id) = initial_account_id.as_deref() else {
             return (Vec::new(), None, false);
         };
+        if let Some(cache) = ctx.usage_cache.as_ref()
+            && let Some(cached) = cache.get(base_url, account_id, use_color, ctx.now)
+        {
+            return (cached, None, false);
+        }
         match fetch_usage_details(
             base_url,
             access_token,
@@ -1443,7 +1546,12 @@ fn detail_lines(
             unavailable_text,
             ctx.now,
         ) {
-            Ok(details) => (details, None, false),
+            Ok(details) => {
+                if let Some(cache) = ctx.usage_cache.as_ref() {
+                    cache.put(base_url, account_id, use_color, ctx.now, &details);
+                }
+                (details, None, false)
+            }
             Err(err) if err.status_code() == Some(401) => {
                 match refresh_profile_tokens(profile_path, tokens) {
                     Ok(()) => {
@@ -1470,7 +1578,12 @@ fn detail_lines(
                             unavailable_text,
                             ctx.now,
                         ) {
-                            Ok(details) => (details, None, true),
+                            Ok(details) => {
+                                if let Some(cache) = ctx.usage_cache.as_ref() {
+                                    cache.put(base_url, account_id, use_color, ctx.now, &details);
+                                }
+                                (details, None, true)
+                            }
                             Err(err) => (
                                 vec![format_error(&err.message())],
                                 Some(error_summary(PROFILE_SUMMARY_USAGE_ERROR, &err.message())),
@@ -1694,10 +1807,20 @@ struct ListCtx {
     use_color: bool,
     profiles_dir: PathBuf,
     auth_path: PathBuf,
+    usage_cache: Option<UsageCache>,
 }
 
 impl ListCtx {
     fn new(paths: &Paths, show_usage: bool, show_current_marker: bool) -> Self {
+        let ttl_secs = usage_cache_ttl_secs();
+        let usage_cache = if show_usage && ttl_secs > 0 {
+            Some(UsageCache::load(
+                paths.codex.join(USAGE_CACHE_FILE),
+                ttl_secs,
+            ))
+        } else {
+            None
+        };
         Self {
             base_url: show_usage.then(|| read_base_url(paths)),
             now: Local::now(),
@@ -1706,8 +1829,23 @@ impl ListCtx {
             use_color: use_color_stdout(),
             profiles_dir: paths.profiles.clone(),
             auth_path: paths.auth.clone(),
+            usage_cache,
         }
     }
+
+    fn flush_usage_cache(&self) {
+        if let Some(cache) = self.usage_cache.as_ref() {
+            cache.flush(self.now);
+        }
+    }
+}
+
+fn usage_cache_ttl_secs() -> i64 {
+    env::var(USAGE_CACHE_TTL_SEC_ENV)
+        .ok()
+        .and_then(|value| value.trim().parse::<i64>().ok())
+        .unwrap_or(USAGE_CACHE_TTL_SEC_DEFAULT)
+        .max(0)
 }
 
 struct Entry {
@@ -1973,6 +2111,21 @@ mod tests {
     }
 
     #[test]
+    fn usage_cache_ttl_defaults_and_clamps() {
+        let _unset = set_env_guard(USAGE_CACHE_TTL_SEC_ENV, None);
+        assert_eq!(usage_cache_ttl_secs(), USAGE_CACHE_TTL_SEC_DEFAULT);
+
+        let _bad = set_env_guard(USAGE_CACHE_TTL_SEC_ENV, Some("oops"));
+        assert_eq!(usage_cache_ttl_secs(), USAGE_CACHE_TTL_SEC_DEFAULT);
+
+        let _disabled = set_env_guard(USAGE_CACHE_TTL_SEC_ENV, Some("-5"));
+        assert_eq!(usage_cache_ttl_secs(), 0);
+
+        let _small = set_env_guard(USAGE_CACHE_TTL_SEC_ENV, Some("5"));
+        assert_eq!(usage_cache_ttl_secs(), 5);
+    }
+
+    #[test]
     fn profiles_index_roundtrip() {
         let dir = tempfile::tempdir().expect("tempdir");
         let paths = make_paths(dir.path());
@@ -2155,6 +2308,7 @@ mod tests {
             use_color: false,
             profiles_dir: PathBuf::new(),
             auth_path: PathBuf::new(),
+            usage_cache: None,
         };
         let lines = render_entries(&[entry], &ctx, true);
         assert!(!lines.is_empty());
