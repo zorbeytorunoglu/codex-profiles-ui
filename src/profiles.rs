@@ -4,6 +4,7 @@ use inquire::{Confirm, MultiSelect, Select};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
+use std::env;
 use std::fmt;
 use std::fs;
 use std::io::{self, IsTerminal as _};
@@ -49,7 +50,9 @@ use crate::{
     usage_unavailable,
 };
 
-const MAX_USAGE_CONCURRENCY: usize = 4;
+const DEFAULT_USAGE_CONCURRENCY: usize = 32;
+const MAX_USAGE_CONCURRENCY: usize = 128;
+const USAGE_CONCURRENCY_ENV: &str = "CODEX_PROFILES_USAGE_CONCURRENCY";
 
 pub fn save_profile(paths: &Paths, label: Option<String>) -> Result<(), String> {
     let use_color = use_color_stdout();
@@ -1578,18 +1581,26 @@ fn make_entries(
     let labels_by_id = labels_by_id(&snapshot.labels);
     let build = |id: &String| make_saved(id, snapshot, &labels_by_id, current_saved_id, ctx);
     if ctx.show_usage && ordered.len() >= 3 {
-        if ordered.len() > MAX_USAGE_CONCURRENCY {
-            let mut entries = Vec::with_capacity(ordered.len());
-            for chunk in ordered.chunks(MAX_USAGE_CONCURRENCY) {
-                let mut chunk_entries: Vec<Entry> = chunk.par_iter().map(build).collect();
-                entries.append(&mut chunk_entries);
-            }
-            return entries;
+        let workers = usage_concurrency().min(ordered.len());
+        if workers <= 1 {
+            return ordered.iter().map(build).collect();
         }
-        return ordered.par_iter().map(build).collect();
+        if let Ok(pool) = rayon::ThreadPoolBuilder::new().num_threads(workers).build() {
+            return pool.install(|| ordered.par_iter().map(&build).collect());
+        }
+        return ordered.iter().map(build).collect();
     }
 
     ordered.iter().map(build).collect()
+}
+
+fn usage_concurrency() -> usize {
+    env::var(USAGE_CONCURRENCY_ENV)
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .map(|value| value.clamp(1, MAX_USAGE_CONCURRENCY))
+        .unwrap_or(DEFAULT_USAGE_CONCURRENCY)
 }
 
 fn is_api_saved_profile(id: &str, snapshot: &Snapshot) -> bool {
@@ -1742,7 +1753,7 @@ fn is_profile_file(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::{build_id_token, make_paths};
+    use crate::test_utils::{build_id_token, make_paths, set_env_guard};
     use base64::Engine;
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use std::fs;
@@ -1941,6 +1952,24 @@ mod tests {
         };
         let ordered = ordered_profile_ids(&snapshot, Some("id-z"));
         assert_eq!(ordered, vec!["id-z", "id-a", "id-b", "id-u2", "id-u1"]);
+    }
+
+    #[test]
+    fn usage_concurrency_defaults_and_clamps() {
+        let _unset = set_env_guard(USAGE_CONCURRENCY_ENV, None);
+        assert_eq!(usage_concurrency(), DEFAULT_USAGE_CONCURRENCY);
+
+        let _zero = set_env_guard(USAGE_CONCURRENCY_ENV, Some("0"));
+        assert_eq!(usage_concurrency(), DEFAULT_USAGE_CONCURRENCY);
+
+        let _bad = set_env_guard(USAGE_CONCURRENCY_ENV, Some("oops"));
+        assert_eq!(usage_concurrency(), DEFAULT_USAGE_CONCURRENCY);
+
+        let _small = set_env_guard(USAGE_CONCURRENCY_ENV, Some("3"));
+        assert_eq!(usage_concurrency(), 3);
+
+        let _high = set_env_guard(USAGE_CONCURRENCY_ENV, Some("999"));
+        assert_eq!(usage_concurrency(), MAX_USAGE_CONCURRENCY);
     }
 
     #[test]

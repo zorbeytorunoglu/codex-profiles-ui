@@ -1,10 +1,10 @@
-use chrono::{DateTime, Local};
+use chrono::{DateTime, Local, Utc};
 use colored::Colorize;
 use fslock::LockFile;
 use serde::Deserialize;
 use std::fs;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::{
     AUTH_RELOGIN_AND_SAVE, Paths, UI_ERROR_TWO_LINE, UI_INFO_PREFIX, USAGE_ERR_ACCESS_DENIED_403,
@@ -17,6 +17,10 @@ use crate::{is_plain, style_text, use_color_stdout};
 
 const DEFAULT_BASE_URL: &str = "https://chatgpt.com/backend-api";
 const USER_AGENT: &str = "codex-profiles";
+const USAGE_RETRY_ATTEMPTS: usize = 3;
+const USAGE_RETRY_BASE_MS: u64 = 250;
+const USAGE_RETRY_MAX_MS: u64 = 3_000;
+const USAGE_RETRY_JITTER_MS: u64 = 125;
 #[cfg(not(test))]
 const LOCK_TIMEOUT: Duration = Duration::from_secs(10);
 const LOCK_RETRY_DELAY: Duration = Duration::from_secs(1);
@@ -203,23 +207,80 @@ fn fetch_usage_payload(
     let endpoint = usage_endpoint(base_url);
     let config = ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(5)))
+        .http_status_as_error(false)
         .build();
     let agent: ureq::Agent = config.into();
-    let response = match agent
-        .get(&endpoint)
-        .header("Authorization", &format!("Bearer {access_token}"))
-        .header("ChatGPT-Account-Id", account_id)
-        .header("User-Agent", USER_AGENT)
-        .call()
-    {
-        Ok(response) => response,
-        Err(ureq::Error::StatusCode(code)) => return Err(UsageFetchError::Status(code)),
-        Err(err) => return Err(UsageFetchError::Transport(err.to_string())),
-    };
-    response
-        .into_body()
-        .read_json::<UsagePayload>()
-        .map_err(|err| UsageFetchError::Parse(err.to_string()))
+    for attempt in 0..USAGE_RETRY_ATTEMPTS {
+        let response = agent
+            .get(&endpoint)
+            .header("Authorization", &format!("Bearer {access_token}"))
+            .header("ChatGPT-Account-Id", account_id)
+            .header("User-Agent", USER_AGENT)
+            .call()
+            .map_err(|err| UsageFetchError::Transport(err.to_string()))?;
+        let status = response.status();
+        if status == 429 {
+            let retry_after = response
+                .headers()
+                .get("Retry-After")
+                .and_then(|value| value.to_str().ok());
+            if let Some(delay) = usage_retry_delay(attempt, retry_after) {
+                thread::sleep(delay);
+                continue;
+            }
+        }
+        if !status.is_success() {
+            return Err(UsageFetchError::Status(status.as_u16()));
+        }
+        return response
+            .into_body()
+            .read_json::<UsagePayload>()
+            .map_err(|err| UsageFetchError::Parse(err.to_string()));
+    }
+    Err(UsageFetchError::Status(429))
+}
+
+fn usage_retry_delay(attempt: usize, retry_after: Option<&str>) -> Option<Duration> {
+    if attempt + 1 >= USAGE_RETRY_ATTEMPTS {
+        return None;
+    }
+    if let Some(delay) = retry_after.and_then(parse_retry_after) {
+        return Some(delay.min(Duration::from_millis(USAGE_RETRY_MAX_MS)));
+    }
+    let shift = attempt.min(10) as u32;
+    let base = USAGE_RETRY_BASE_MS.saturating_mul(1u64 << shift);
+    let mut delay = Duration::from_millis(base.min(USAGE_RETRY_MAX_MS));
+    let jitter = usage_retry_jitter();
+    delay += jitter;
+    Some(delay.min(Duration::from_millis(USAGE_RETRY_MAX_MS)))
+}
+
+fn usage_retry_jitter() -> Duration {
+    if USAGE_RETRY_JITTER_MS == 0 {
+        return Duration::from_millis(0);
+    }
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .subsec_nanos() as u64;
+    Duration::from_millis(nanos % (USAGE_RETRY_JITTER_MS + 1))
+}
+
+fn parse_retry_after(value: &str) -> Option<Duration> {
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    if let Ok(seconds) = value.parse::<u64>() {
+        return Some(Duration::from_secs(seconds));
+    }
+    let parsed = chrono::DateTime::parse_from_rfc2822(value).ok()?;
+    let retry_at = parsed.with_timezone(&Utc).timestamp();
+    let now = Utc::now().timestamp();
+    if retry_at <= now {
+        return Some(Duration::from_millis(0));
+    }
+    Some(Duration::from_secs((retry_at - now) as u64))
 }
 
 pub fn fetch_usage_details(
@@ -710,6 +771,15 @@ mod tests {
         let lines =
             fetch_usage_details(&base_url, "token", "acct", "unavailable", Local::now()).unwrap();
         assert!(!lines.is_empty());
+    }
+
+    #[test]
+    fn retry_after_parsing_paths() {
+        assert_eq!(parse_retry_after("2"), Some(Duration::from_secs(2)));
+        assert!(parse_retry_after("Thu, 01 Jan 1970 00:00:00 GMT").is_some());
+        assert!(parse_retry_after("not-a-date").is_none());
+        assert!(usage_retry_delay(USAGE_RETRY_ATTEMPTS - 1, Some("1")).is_none());
+        assert!(usage_retry_delay(0, Some("2")).is_some());
     }
 
     #[test]
