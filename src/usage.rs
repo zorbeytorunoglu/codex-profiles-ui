@@ -19,21 +19,23 @@ const DEFAULT_BASE_URL: &str = "https://chatgpt.com/backend-api";
 const USER_AGENT: &str = "codex-profiles";
 const USAGE_RETRY_ATTEMPTS: usize = 3;
 const USAGE_RETRY_BASE_MS: u64 = 250;
-const USAGE_RETRY_MAX_MS: u64 = 3_000;
+const USAGE_BACKOFF_MAX_MS: u64 = 3_000;
 const USAGE_RETRY_JITTER_MS: u64 = 125;
 #[cfg(not(test))]
 const LOCK_TIMEOUT: Duration = Duration::from_secs(10);
 const LOCK_RETRY_DELAY: Duration = Duration::from_secs(1);
 
 #[cfg(test)]
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::cell::Cell;
 
 #[cfg(test)]
 const LOCK_FAIL_ERR: usize = 1;
 #[cfg(test)]
 const LOCK_FAIL_BUSY: usize = 2;
 #[cfg(test)]
-static LOCK_FAILPOINT: AtomicUsize = AtomicUsize::new(0);
+thread_local! {
+    static LOCK_FAILPOINT: Cell<usize> = const { Cell::new(0) };
+}
 
 #[derive(Clone, Default)]
 pub(crate) struct UsageLimits {
@@ -245,14 +247,14 @@ fn usage_retry_delay(attempt: usize, retry_after: Option<&str>) -> Option<Durati
         return None;
     }
     if let Some(delay) = retry_after.and_then(parse_retry_after) {
-        return Some(delay.min(Duration::from_millis(USAGE_RETRY_MAX_MS)));
+        return Some(delay);
     }
     let shift = attempt.min(10) as u32;
     let base = USAGE_RETRY_BASE_MS.saturating_mul(1u64 << shift);
-    let mut delay = Duration::from_millis(base.min(USAGE_RETRY_MAX_MS));
+    let mut delay = Duration::from_millis(base.min(USAGE_BACKOFF_MAX_MS));
     let jitter = usage_retry_jitter();
     delay += jitter;
-    Some(delay.min(Duration::from_millis(USAGE_RETRY_MAX_MS)))
+    Some(delay.min(Duration::from_millis(USAGE_BACKOFF_MAX_MS)))
 }
 
 fn usage_retry_jitter() -> Duration {
@@ -699,7 +701,8 @@ fn lock_timeout() -> Duration {
 
 #[cfg(test)]
 fn try_lock(lock: &mut LockFile) -> Result<bool, fslock::Error> {
-    match LOCK_FAILPOINT.load(Ordering::Relaxed) {
+    let fail_mode = LOCK_FAILPOINT.with(|failpoint| failpoint.get());
+    match fail_mode {
         LOCK_FAIL_ERR => Err(std::io::Error::other("fail")),
         LOCK_FAIL_BUSY => Ok(false),
         _ => lock.try_lock(),
@@ -780,6 +783,10 @@ mod tests {
         assert!(parse_retry_after("not-a-date").is_none());
         assert!(usage_retry_delay(USAGE_RETRY_ATTEMPTS - 1, Some("1")).is_none());
         assert!(usage_retry_delay(0, Some("2")).is_some());
+        assert_eq!(
+            usage_retry_delay(0, Some("7")),
+            Some(Duration::from_secs(7))
+        );
     }
 
     #[test]
@@ -961,13 +968,13 @@ mod tests {
         fs::create_dir_all(&paths.profiles).unwrap();
         fs::write(&paths.profiles_lock, "").unwrap();
 
-        LOCK_FAILPOINT.store(LOCK_FAIL_BUSY, Ordering::Relaxed);
+        LOCK_FAILPOINT.with(|failpoint| failpoint.set(LOCK_FAIL_BUSY));
         let err = lock_usage(&paths).unwrap_err();
         assert!(err.contains("Could not acquire profiles lock"));
-        LOCK_FAILPOINT.store(LOCK_FAIL_ERR, Ordering::Relaxed);
+        LOCK_FAILPOINT.with(|failpoint| failpoint.set(LOCK_FAIL_ERR));
         let err = lock_usage(&paths).unwrap_err();
         assert!(err.contains("Could not lock profiles file"));
-        LOCK_FAILPOINT.store(0, Ordering::Relaxed);
+        LOCK_FAILPOINT.with(|failpoint| failpoint.set(0));
     }
 
     #[test]

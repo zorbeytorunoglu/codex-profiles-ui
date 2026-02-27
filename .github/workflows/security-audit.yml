@@ -1,0 +1,31 @@
+name: security-audit
+
+on:
+  schedule:
+    - cron: "23 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7
+        with:
+          toolchain: stable
+
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@aba36d755ec7ca22d38b12111787c26115943952 # v2
+        with:
+          tool: cargo-audit
+
+      - name: Run cargo audit
+        run: |
+          cargo fetch --locked
+          cargo audit --deny warnings

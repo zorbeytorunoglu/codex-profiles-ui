@@ -20,17 +20,19 @@ jobs:
       NEXTEST_SHOW_PROGRESS: "none"
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7
+        with:
+          toolchain: stable
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
         continue-on-error: true
         with:
           shared-key: ${{ runner.os }}-tests-${{ hashFiles('rust-toolchain.toml') }}
       - name: Cache cargo bin
-        uses: actions/cache@v5
+        uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5
         continue-on-error: true
         with:
           path: ~/.cargo/bin
@@ -38,7 +40,9 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-${{ hashFiles('rust-toolchain.toml') }}-cargo-bin
       - name: Install nextest
-        uses: taiki-e/install-action@cargo-nextest
+        uses: taiki-e/install-action@aba36d755ec7ca22d38b12111787c26115943952 # v2
+        with:
+          tool: cargo-nextest
 
       - name: Run checks
         run: scripts/check.sh --no-audit

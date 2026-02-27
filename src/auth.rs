@@ -197,15 +197,13 @@ pub fn extract_profile_identity(tokens: &Tokens) -> Option<ProfileIdentityKey> {
         .or_else(|| token_account_id(tokens).map(str::to_string))
         .and_then(|value| normalize_identity_value(&value))?;
 
-    let workspace_or_org_id = token_account_id(tokens)
-        .map(str::to_string)
-        .or_else(|| {
-            claims.as_ref().and_then(|claims| {
-                claims
-                    .auth
-                    .as_ref()
-                    .and_then(|auth| auth.chatgpt_account_id.clone())
-            })
+    let workspace_or_org_id = claims
+        .as_ref()
+        .and_then(|claims| {
+            claims
+                .auth
+                .as_ref()
+                .and_then(|auth| auth.chatgpt_account_id.clone())
         })
         .or_else(|| {
             claims
@@ -213,6 +211,7 @@ pub fn extract_profile_identity(tokens: &Tokens) -> Option<ProfileIdentityKey> {
                 .and_then(|claims| claims.organization_id.clone())
         })
         .or_else(|| claims.as_ref().and_then(|claims| claims.project_id.clone()))
+        .or_else(|| token_account_id(tokens).map(str::to_string))
         .and_then(|value| normalize_identity_value(&value))
         .unwrap_or_else(|| "unknown".to_string());
 
@@ -660,7 +659,7 @@ mod tests {
         };
         let identity = extract_profile_identity(&tokens).unwrap();
         assert_eq!(identity.principal_id, "user-123");
-        assert_eq!(identity.workspace_or_org_id, "acct-fallback");
+        assert_eq!(identity.workspace_or_org_id, "ws-123");
         assert_eq!(identity.plan_type, "team");
     }
 
