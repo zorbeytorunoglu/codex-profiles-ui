@@ -355,7 +355,10 @@ fn status_all_profiles(paths: &Paths, show_errors: bool) -> Result<(), String> {
     let mut lines = Vec::new();
     if let Some(entry) = current_visible {
         lines.extend(render_entries(&[entry], &ctx, true));
-        if !list_entries.is_empty() || hidden_api_count > 0 || hidden_error_count > 0 {
+        if !list_entries.is_empty() {
+            push_separator(&mut lines, true);
+            lines.push(String::new());
+        } else if hidden_api_count > 0 || hidden_error_count > 0 {
             push_separator(&mut lines, true);
         }
     }
@@ -1359,68 +1362,15 @@ fn render_entries(entries: &[Entry], ctx: &ListCtx, allow_plain_spacing: bool) -
                 }
             }));
         }
-        if ctx.show_usage {
-            lines.extend(render_boxed_entry(&entry_lines));
-        } else {
-            lines.extend(entry_lines);
-        }
+        lines.extend(entry_lines);
         if idx + 1 < entries.len() {
             push_separator(&mut lines, allow_plain_spacing);
+            if ctx.show_usage && allow_plain_spacing {
+                lines.push(String::new());
+            }
         }
     }
     lines
-}
-
-fn render_boxed_entry(lines: &[String]) -> Vec<String> {
-    let content_width = lines
-        .iter()
-        .map(|line| visible_line_len(line))
-        .max()
-        .unwrap_or(0);
-    let mut out = Vec::with_capacity(lines.len() + 2);
-    out.push(format!("+{}+", "-".repeat(content_width + 2)));
-    for line in lines {
-        let line_width = visible_line_len(line);
-        let pad = content_width.saturating_sub(line_width);
-        out.push(format!("| {}{} |", line, " ".repeat(pad)));
-    }
-    out.push(format!("+{}+", "-".repeat(content_width + 2)));
-    out
-}
-
-fn visible_line_len(line: &str) -> usize {
-    strip_ansi(line).chars().count()
-}
-
-fn strip_ansi(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    let mut chars = input.chars().peekable();
-    loop {
-        let Some(ch) = chars.next() else {
-            break;
-        };
-        if ch == '\x1b' && consume_ansi_escape(&mut chars) {
-            continue;
-        }
-        out.push(ch);
-    }
-    out
-}
-
-fn consume_ansi_escape<I>(chars: &mut std::iter::Peekable<I>) -> bool
-where
-    I: Iterator<Item = char>,
-{
-    if chars.peek() != Some(&'[') {
-        return false;
-    }
-    chars.next();
-    for c in chars.by_ref() {
-        if c == 'm' {
-            break;
-        }
-    }
-    true
 }
 
 fn push_separator(lines: &mut Vec<String>, allow_plain_spacing: bool) {
@@ -2240,24 +2190,36 @@ mod tests {
     }
 
     #[test]
-    fn render_boxed_entry_handles_ansi_and_padding() {
-        let lines = vec![
-            "\u{1b}[1m[TEAM]\u{1b}[0m user@example.com".to_string(),
-            String::new(),
-            " 5 hour: 100% left".to_string(),
+    fn render_entries_status_all_has_extra_gap_between_profiles() {
+        let entries = vec![
+            Entry {
+                display: "One".to_string(),
+                details: vec!["5 hour: 10% left".to_string()],
+                error_summary: None,
+                always_show_details: true,
+                is_current: false,
+            },
+            Entry {
+                display: "Two".to_string(),
+                details: vec!["5 hour: 20% left".to_string()],
+                error_summary: None,
+                always_show_details: true,
+                is_current: false,
+            },
         ];
-        let boxed = render_boxed_entry(&lines);
-        let content_width = lines
-            .iter()
-            .map(|line| visible_line_len(line))
-            .max()
-            .unwrap_or(0);
-        let expected_border = format!("+{}+", "-".repeat(content_width + 2));
-        let expected_blank = format!("| {} |", " ".repeat(content_width));
-        assert_eq!(boxed.first(), Some(&expected_border));
-        assert_eq!(boxed.last(), Some(&expected_border));
-        assert_eq!(boxed[2], expected_blank);
-        assert_eq!(visible_line_len(&boxed[1]), visible_line_len(&boxed[3]));
+        let ctx = ListCtx {
+            base_url: None,
+            now: chrono::Local::now(),
+            show_usage: true,
+            show_current_marker: false,
+            use_color: false,
+            profiles_dir: PathBuf::new(),
+            auth_path: PathBuf::new(),
+        };
+        let lines = render_entries(&entries, &ctx, true);
+        let first_profile_last_line = 2;
+        assert_eq!(lines[first_profile_last_line + 1], "");
+        assert_eq!(lines[first_profile_last_line + 2], "");
     }
 
     #[test]
