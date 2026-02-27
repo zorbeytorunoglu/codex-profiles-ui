@@ -371,6 +371,39 @@ fn assert_order(output: &str, first: &str, second: &str) {
     );
 }
 
+fn assert_profile_block_layout(output: &str, email: &str, next_email: Option<&str>) {
+    let lines: Vec<&str> = output.lines().collect();
+    let header_idx = lines
+        .iter()
+        .position(|line| line.contains(email))
+        .unwrap_or_else(|| panic!("missing profile header for {email}"));
+    assert_eq!(lines.get(header_idx + 1), Some(&""));
+    assert!(
+        lines
+            .get(header_idx + 2)
+            .is_some_and(|line| line.contains("5 hour:"))
+    );
+    assert!(
+        lines
+            .get(header_idx + 3)
+            .is_some_and(|line| line.contains("Weekly:"))
+    );
+    match next_email {
+        Some(next) => {
+            assert_eq!(lines.get(header_idx + 4), Some(&""));
+            assert_eq!(lines.get(header_idx + 5), Some(&""));
+            assert!(
+                lines
+                    .get(header_idx + 6)
+                    .is_some_and(|line| line.contains(next))
+            );
+        }
+        None => {
+            assert!(lines.get(header_idx + 4).is_none());
+        }
+    }
+}
+
 fn write_profile_tokens(env: &TestEnv, id: &str, tokens: serde_json::Value) {
     fs::create_dir_all(env.profiles_dir()).expect("create profiles dir");
     let value = serde_json::json!({ "tokens": tokens });
@@ -733,6 +766,29 @@ fn ui_status_all_command() {
     let output = env.run(&["status", "--all", "--show-errors"]);
     assert!(output.contains("<- current profile"));
     assert_order(&output, "alpha@example.com", "beta@example.com");
+}
+
+#[test]
+fn ui_status_all_layout_snapshot_spacing() {
+    let env = TestEnv::new();
+    seed_profiles(&env);
+    env.write_profiles_index(
+        &[(ALPHA_ID, 200), (BETA_ID, 100)],
+        &[(ALPHA_ID, "alpha"), (BETA_ID, "beta")],
+        None,
+    );
+    seed_alpha(&env);
+    let usage_body = r#"{"rate_limit":{"primary_window":{"used_percent":20,"limit_window_seconds":18000,"reset_at":2000000000},"secondary_window":{"used_percent":50,"limit_window_seconds":604800,"reset_at":2000600000}}}"#;
+    let (usage_addr, usage_handle) = start_usage_server(usage_body, 6).expect("usage server");
+    env.write_config(&format!("http://{usage_addr}/backend-api"));
+
+    let output = env.run(&["status", "--all"]);
+    assert_order(&output, ALPHA_EMAIL, BETA_EMAIL);
+    assert_profile_block_layout(&output, ALPHA_EMAIL, Some(BETA_EMAIL));
+    assert_profile_block_layout(&output, BETA_EMAIL, None);
+    assert!(output.contains("<- current profile"));
+
+    let _ = usage_handle.join();
 }
 
 #[test]
