@@ -314,7 +314,14 @@ fn start_response_server(
                     }
                 }
                 Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
-                    if last_activity.elapsed() > Duration::from_secs(2) {
+                    // Give slower CI hosts time to make the first request, but
+                    // shut down quickly after serving at least one request.
+                    let idle_timeout = if handled == 0 {
+                        Duration::from_secs(10)
+                    } else {
+                        Duration::from_secs(2)
+                    };
+                    if last_activity.elapsed() > idle_timeout {
                         break;
                     }
                     thread::sleep(Duration::from_millis(25));
