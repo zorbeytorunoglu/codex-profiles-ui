@@ -67,7 +67,7 @@ fn run(cli: Cli) -> Result<(), String> {
 
     match cli.command {
         Commands::Save { label } => save_profile(&paths, label),
-        Commands::Load { label, id } => load_profile(&paths, label, id),
+        Commands::Load { label, id, force } => load_profile(&paths, label, id, force),
         Commands::List { json, show_id } => list_profiles(&paths, json, show_id),
         Commands::Status { all, show_errors } => status_profiles(&paths, all, show_errors),
         Commands::Delete { yes, label, id } => delete_profile(&paths, yes, label, id),

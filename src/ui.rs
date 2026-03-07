@@ -5,9 +5,9 @@ use supports_color::Stream;
 
 use crate::has_auth;
 use crate::{
-    CANCELLED_MESSAGE, UI_ERROR_PREFIX, UI_HINT_LIST_PROFILES, UI_HINT_LOGIN_AND_SAVE,
-    UI_HINT_LOGIN_SAVE_BEFORE_LOADING, UI_HINT_SAVE_BEFORE_LOADING, UI_HINT_SAVE_PROFILE,
-    UI_INFO_PREFIX, UI_NO_SAVED_PROFILES, UI_NORMALIZED_AUTH_INCOMPLETE,
+    CANCELLED_MESSAGE, UI_ERROR_PREFIX, UI_HINT_FORCE_LOAD, UI_HINT_LIST_PROFILES,
+    UI_HINT_LOGIN_AND_SAVE, UI_HINT_LOGIN_SAVE_BEFORE_LOADING, UI_HINT_SAVE_BEFORE_LOADING,
+    UI_HINT_SAVE_PROFILE, UI_INFO_PREFIX, UI_NO_SAVED_PROFILES, UI_NORMALIZED_AUTH_INCOMPLETE,
     UI_NORMALIZED_AUTH_INVALID, UI_NORMALIZED_NOT_LOGGED_IN, UI_UNKNOWN_PROFILE, UI_WARNING_PREFIX,
     UI_WARNING_UNSAVED_PROFILE,
 };
@@ -99,13 +99,16 @@ pub fn format_no_profiles(paths: &Paths, use_color: bool) -> String {
     crate::msg1(UI_NO_SAVED_PROFILES, hint)
 }
 
-pub fn format_save_before_load(paths: &Paths, use_color: bool) -> String {
-    format_save_hint(
+pub fn format_save_before_load_or_force(paths: &Paths, use_color: bool) -> String {
+    let base = format_save_hint_message(
         paths,
         use_color,
         UI_HINT_SAVE_BEFORE_LOADING,
         UI_HINT_LOGIN_SAVE_BEFORE_LOADING,
-    )
+    );
+    let force = format_command("load --force", use_color);
+    let message = format!("{base}\n{}", UI_HINT_FORCE_LOAD.replace("{force}", &force));
+    format_hint(&message, use_color)
 }
 
 pub fn format_unsaved_warning(use_color: bool) -> Vec<String> {
@@ -287,16 +290,27 @@ fn format_command(cmd: &str, use_color: bool) -> String {
 }
 
 fn format_save_hint(paths: &Paths, use_color: bool, save_only: &str, with_login: &str) -> String {
+    format_hint(
+        &format_save_hint_message(paths, use_color, save_only, with_login),
+        use_color,
+    )
+}
+
+fn format_save_hint_message(
+    paths: &Paths,
+    use_color: bool,
+    save_only: &str,
+    with_login: &str,
+) -> String {
     let save = format_command("save", use_color);
-    let message = if has_auth(&paths.auth) {
+    if has_auth(&paths.auth) {
         save_only.replace("{save}", &save)
     } else {
         let login = format_cmd("codex login", use_color);
         with_login
             .replace("{login}", &login)
             .replace("{save}", &save)
-    };
-    format_hint(&message, use_color)
+    }
 }
 
 #[cfg(test)]
@@ -358,8 +372,9 @@ mod tests {
         let paths = make_paths(dir.path());
         let msg = format_no_profiles(&paths, false);
         assert!(msg.contains("No saved profiles"));
-        let msg = format_save_before_load(&paths, false);
+        let msg = format_save_before_load_or_force(&paths, false);
         assert!(msg.contains("save"));
+        assert!(msg.contains("--force"));
     }
 
     #[test]

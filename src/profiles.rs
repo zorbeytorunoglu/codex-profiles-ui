@@ -32,7 +32,7 @@ use crate::{
 };
 use crate::{
     CANCELLED_MESSAGE, format_action, format_entry_header, format_error, format_list_hint,
-    format_no_profiles, format_save_before_load, format_unsaved_warning, format_warning,
+    format_no_profiles, format_save_before_load_or_force, format_unsaved_warning, format_warning,
     inquire_select_render_config, is_inquire_cancel, is_plain, normalize_error, print_output_block,
     style_text, use_color_stderr, use_color_stdout,
 };
@@ -91,13 +91,16 @@ pub fn load_profile(
     paths: &Paths,
     label: Option<String>,
     id: Option<String>,
+    force: bool,
 ) -> Result<(), String> {
     let use_color_err = use_color_stderr();
     let use_color_out = use_color_stdout();
     let no_profiles = format_no_profiles(paths, use_color_err);
     let (mut snapshot, mut ordered) = load_snapshot_ordered(paths, true, &no_profiles)?;
 
-    if let Some(reason) = unsaved_reason(paths, &snapshot.tokens)? {
+    if let Some(reason) = unsaved_reason(paths, &snapshot.tokens)?
+        && !force
+    {
         match prompt_unsaved_load(paths, &reason)? {
             LoadChoice::SaveAndContinue => {
                 save_profile(paths, None)?;
@@ -1189,7 +1192,7 @@ pub(crate) enum LoadChoice {
 pub(crate) fn prompt_unsaved_load(paths: &Paths, reason: &str) -> Result<LoadChoice, String> {
     let is_tty = io::stdin().is_terminal();
     if !is_tty {
-        let hint = format_save_before_load(paths, use_color_stderr());
+        let hint = format_save_before_load_or_force(paths, use_color_stderr());
         return Err(crate::msg1(PROFILE_ERR_CURRENT_NOT_SAVED, hint));
     }
     let selection = Select::new(
@@ -1212,7 +1215,7 @@ fn prompt_unsaved_load_with(
     selection: Result<&str, inquire::error::InquireError>,
 ) -> Result<LoadChoice, String> {
     if !is_tty {
-        let hint = format_save_before_load(paths, use_color_stderr());
+        let hint = format_save_before_load_or_force(paths, use_color_stderr());
         return Err(crate::msg1(PROFILE_ERR_CURRENT_NOT_SAVED, hint));
     }
     let warning = format_warning(

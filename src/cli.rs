@@ -31,6 +31,9 @@ pub enum Commands {
         #[arg(value_name = "profile-id")]
         #[arg(long, conflicts_with = "label")]
         id: Option<String>,
+        /// Continue without saving the current unsaved profile first
+        #[arg(long)]
+        force: bool,
     },
     /// List saved profiles
     List {
@@ -76,6 +79,6 @@ pub fn command_with_examples() -> Command {
 
 fn examples_root(name: &str) -> String {
     format!(
-        "Examples:\n  {name} save --label work\n  {name} load --label work\n  {name} load --id mail@example.com-team\n  {name} list\n  {name} list --json\n  {name} status\n  {name} delete --label work\n  {name} delete --id mail@example.com-team --yes"
+        "Examples:\n  {name} save --label work\n  {name} load --label work\n  {name} load --id mail@example.com-team --force\n  {name} list\n  {name} list --json\n  {name} status\n  {name} delete --label work\n  {name} delete --id mail@example.com-team --yes"
     )
 }

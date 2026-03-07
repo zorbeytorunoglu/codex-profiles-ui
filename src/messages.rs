@@ -125,6 +125,7 @@ pub const UI_HINT_SAVE_PROFILE: &str = "Run {save} to save this profile.";
 pub const UI_HINT_LOGIN_AND_SAVE: &str = "Run {login} • then {save}.";
 pub const UI_HINT_SAVE_BEFORE_LOADING: &str = "Run {save} before loading.";
 pub const UI_HINT_LOGIN_SAVE_BEFORE_LOADING: &str = "Run {login}, then {save} before loading.";
+pub const UI_HINT_FORCE_LOAD: &str = "Re-run with {force} to continue without saving.";
 pub const UI_HINT_LIST_PROFILES: &str = "Run {list} to see saved profiles.";
 pub const UI_NORMALIZED_NOT_LOGGED_IN: &str = "Not logged in. Run `codex login`.";
 pub const UI_NORMALIZED_AUTH_INVALID: &str = "Auth file is invalid. Run `codex login`.";

@@ -536,6 +536,22 @@ fn ui_load_by_id_command() {
 }
 
 #[test]
+fn ui_load_by_id_force_skips_unsaved_prompt() {
+    let env = TestEnv::new();
+    seed_profiles(&env);
+    env.write_auth(
+        "acct-current",
+        "current@example.com",
+        "team",
+        "token-current",
+    );
+    let output = env.run(&["load", "--id", BETA_ID, "--force"]);
+    assert!(output.contains("Loaded profile"));
+    assert!(output.contains("beta@example.com"));
+    assert!(env.read_auth().contains(BETA_ACCOUNT));
+}
+
+#[test]
 fn ui_load_current_profile_marks_current() {
     let env = TestEnv::new();
     seed_profiles(&env);
@@ -601,6 +617,7 @@ fn ui_load_unsaved_profile_requires_prompt() {
     );
     let err = env.run_expect_error(&["load", "--label", "alpha"]);
     assert!(err.contains("Current profile is not saved"));
+    assert!(err.contains("--force"));
 }
 
 #[test]
