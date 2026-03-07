@@ -51,17 +51,22 @@ fn run_cli_with_args(args: Vec<std::ffi::OsString>) -> Result<(), String> {
 
 fn run(cli: Cli) -> Result<(), String> {
     let paths = resolve_paths()?;
-    ensure_paths(&paths)?;
+    let is_doctor = matches!(&cli.command, Commands::Doctor);
+    if !is_doctor {
+        ensure_paths(&paths)?;
+    }
 
-    let check_for_update_on_startup = std::env::var_os("CODEX_PROFILES_SKIP_UPDATE").is_none();
-    let update_config = UpdateConfig {
-        codex_home: paths.codex.clone(),
-        check_for_update_on_startup,
-    };
-    match run_update_prompt_if_needed(&update_config)? {
-        UpdatePromptOutcome::Continue => {}
-        UpdatePromptOutcome::RunUpdate(action) => {
-            return run_update_action(action);
+    if !is_doctor {
+        let check_for_update_on_startup = std::env::var_os("CODEX_PROFILES_SKIP_UPDATE").is_none();
+        let update_config = UpdateConfig {
+            codex_home: paths.codex.clone(),
+            check_for_update_on_startup,
+        };
+        match run_update_prompt_if_needed(&update_config)? {
+            UpdatePromptOutcome::Continue => {}
+            UpdatePromptOutcome::RunUpdate(action) => {
+                return run_update_action(action);
+            }
         }
     }
 
@@ -69,6 +74,7 @@ fn run(cli: Cli) -> Result<(), String> {
         Commands::Save { label } => save_profile(&paths, label),
         Commands::Load { label, id, force } => load_profile(&paths, label, id, force),
         Commands::List { json, show_id } => list_profiles(&paths, json, show_id),
+        Commands::Doctor => doctor(&paths),
         Commands::Label { command } => match command {
             crate::cli::LabelCommands::Set { label, id, to } => {
                 set_profile_label(&paths, label, id, to)
@@ -100,6 +106,7 @@ fn run_update_action(action: UpdateAction) -> Result<(), String> {
 mod auth;
 mod cli;
 mod common;
+mod doctor;
 mod messages;
 mod profiles;
 #[cfg(test)]
@@ -110,6 +117,7 @@ mod usage;
 
 pub(crate) use auth::*;
 pub(crate) use common::*;
+pub(crate) use doctor::*;
 pub(crate) use messages::*;
 pub(crate) use profiles::*;
 pub(crate) use ui::*;

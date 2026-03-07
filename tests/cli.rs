@@ -597,6 +597,70 @@ fn ui_label_clear_label_not_found() {
 }
 
 #[test]
+fn ui_doctor_reports_missing_state() {
+    let env = TestEnv::new();
+    let output = env.run(&["doctor"]);
+    assert!(output.contains("Doctor"));
+    assert!(output.contains("[warn] auth file: missing"));
+    assert!(output.contains("[info] profiles directory: missing"));
+    assert!(output.contains("[info] profiles index: missing"));
+    assert!(output.contains("[info] profiles lock: not created yet"));
+    assert!(output.contains("[info] current profile: no auth file"));
+}
+
+#[test]
+fn ui_doctor_reports_unsaved_current_profile() {
+    let env = TestEnv::new();
+    seed_alpha(&env);
+    let output = env.run(&["doctor"]);
+    assert!(output.contains("[ok] auth file: valid"));
+    assert!(output.contains("[ok] saved profiles: 0 valid, 0 invalid"));
+    assert!(output.contains("[warn] current profile: not saved (run `codex-profiles save`)"));
+}
+
+#[test]
+fn ui_doctor_reports_saved_current_profile() {
+    let env = TestEnv::new();
+    seed_profiles(&env);
+    let output = env.run(&["doctor"]);
+    assert!(output.contains("[ok] auth file: valid"));
+    assert!(output.contains("[ok] saved profiles: 2 valid, 0 invalid"));
+    assert!(output.contains("[ok] current profile: saved"));
+}
+
+#[test]
+fn ui_doctor_reports_incomplete_auth() {
+    let env = TestEnv::new();
+    fs::write(
+        env.codex_dir().join("auth.json"),
+        serde_json::json!({
+            "tokens": {
+                "account_id": "acct-partial",
+                "access_token": "token-partial"
+            }
+        })
+        .to_string(),
+    )
+    .expect("write partial auth");
+    let output = env.run(&["doctor"]);
+    assert!(output.contains("[warn] auth file: present but incomplete"));
+    assert!(output.contains("[warn] current profile: unavailable (present but incomplete"));
+}
+
+#[test]
+fn ui_doctor_reports_invalid_profile_file_and_index() {
+    let env = TestEnv::new();
+    fs::create_dir_all(env.profiles_dir()).expect("create profiles dir");
+    fs::write(env.profiles_dir().join("broken.json"), "{not-json").expect("write broken profile");
+    fs::write(env.profiles_dir().join("profiles.json"), "{not-json").expect("write broken index");
+    let output = env.run(&["doctor"]);
+    assert!(output.contains("[error] profiles index:"));
+    assert!(output.contains(
+        "[warn] saved profiles: 0 valid, 1 invalid (remove or re-save invalid profiles)"
+    ));
+}
+
+#[test]
 fn ui_load_command() {
     let env = TestEnv::new();
     seed_profiles(&env);
