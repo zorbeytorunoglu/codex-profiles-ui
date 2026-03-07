@@ -179,6 +179,13 @@ Loaded profile mail@company.com (Team)
 </details>
 
 <details>
+<summary>How do I verify a release?</summary>
+
+> See [docs/verification.md](docs/verification.md) for release manifests, checksums,
+> and GitHub attestation verification steps.
+</details>
+
+<details>
 <summary>Can I contribute to this project?</summary>
 
 > Yes! Contributions are welcome. For non-trivial changes (new features, significant

@@ -151,5 +151,98 @@ for file in "${files[@]}"; do
   printf "%s  %s\n" "$(sha256_file "${file}")" "${rel_path}" >> "${checksums_file}"
 done
 shopt -u nullglob
+
+manifest_file="${checksums_dir}/release-manifest.json"
+repository="${GITHUB_REPOSITORY:-midhunmonachan/codex-profiles}"
+repository_url="https://github.com/${repository}"
+commit_sha="$(git rev-parse HEAD 2>/dev/null || true)"
+generated_at="$(python3 - <<'PY'
+from datetime import datetime, timezone
+print(datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z'))
+PY
+)"
+rustc_version="$(rustc --version 2>/dev/null || true)"
+cargo_version="$(cargo --version 2>/dev/null || true)"
+node_version="$(node --version 2>/dev/null || true)"
+npm_version="$(npm --version 2>/dev/null || true)"
+
+python3 - <<'PY' \
+  "${version}" \
+  "${checksums_file}" \
+  "${manifest_file}" \
+  "${repository}" \
+  "${repository_url}" \
+  "${commit_sha}" \
+  "${generated_at}" \
+  "${rustc_version}" \
+  "${cargo_version}" \
+  "${node_version}" \
+  "${npm_version}"
+import json
+import sys
+
+(
+    version,
+    checksums_path,
+    manifest_path,
+    repository,
+    repository_url,
+    commit_sha,
+    generated_at,
+    rustc_version,
+    cargo_version,
+    node_version,
+    npm_version,
+) = sys.argv[1:]
+
+artifacts = []
+with open(checksums_path, "r", encoding="utf-8") as fh:
+    for line in fh:
+        line = line.strip()
+        if not line:
+            continue
+        sha256, path = line.split("  ", 1)
+        artifacts.append(
+            {
+                "path": path,
+                "sha256": sha256,
+                "category": path.split("/", 1)[0],
+            }
+        )
+
+tools = {}
+for key, value in {
+    "rustc": rustc_version,
+    "cargo": cargo_version,
+    "node": node_version,
+    "npm": npm_version,
+}.items():
+    if value:
+        tools[key] = value
+
+manifest = {
+    "version": version,
+    "tag": f"v{version}",
+    "repository": {
+        "slug": repository,
+        "url": repository_url,
+    },
+    "commit": commit_sha or None,
+    "generated_at": generated_at,
+    "tools": tools,
+    "provenance": {
+        "github_release": f"{repository_url}/releases/tag/v{version}",
+        "verification_guide": f"{repository_url}/blob/v{version}/docs/verification.md",
+        "github_attestations": True,
+        "npm_provenance": True,
+    },
+    "artifacts": artifacts,
+}
+
+with open(manifest_path, "w", encoding="utf-8") as fh:
+    json.dump(manifest, fh, indent=2)
+    fh.write("\n")
+PY
+
 echo "Checksums:"
 ls -la "${checksums_dir}" || true
