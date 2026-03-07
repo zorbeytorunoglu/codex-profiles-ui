@@ -5,11 +5,11 @@ use supports_color::Stream;
 
 use crate::has_auth;
 use crate::{
-    CANCELLED_MESSAGE, UI_ERROR_PREFIX, UI_HINT_FORCE_LOAD, UI_HINT_LIST_PROFILES,
-    UI_HINT_LOGIN_AND_SAVE, UI_HINT_LOGIN_SAVE_BEFORE_LOADING, UI_HINT_SAVE_BEFORE_LOADING,
-    UI_HINT_SAVE_PROFILE, UI_INFO_PREFIX, UI_NO_SAVED_PROFILES, UI_NORMALIZED_AUTH_INCOMPLETE,
-    UI_NORMALIZED_AUTH_INVALID, UI_NORMALIZED_NOT_LOGGED_IN, UI_UNKNOWN_PROFILE, UI_WARNING_PREFIX,
-    UI_WARNING_UNSAVED_PROFILE,
+    CANCELLED_MESSAGE, UI_ERROR_PREFIX, UI_HINT_ADD_LABEL_LATER, UI_HINT_FORCE_LOAD,
+    UI_HINT_LIST_PROFILES, UI_HINT_LOGIN_AND_SAVE, UI_HINT_LOGIN_SAVE_BEFORE_LOADING,
+    UI_HINT_SAVE_BEFORE_LOADING, UI_HINT_SAVE_PROFILE, UI_INFO_PREFIX, UI_NO_SAVED_PROFILES,
+    UI_NORMALIZED_AUTH_INCOMPLETE, UI_NORMALIZED_AUTH_INVALID, UI_NORMALIZED_NOT_LOGGED_IN,
+    UI_UNKNOWN_PROFILE, UI_WARNING_PREFIX, UI_WARNING_UNSAVED_PROFILE,
 };
 use crate::{Paths, command_name};
 
@@ -109,6 +109,14 @@ pub fn format_save_before_load_or_force(paths: &Paths, use_color: bool) -> Strin
     let force = format_command("load --force", use_color);
     let message = format!("{base}\n{}", UI_HINT_FORCE_LOAD.replace("{force}", &force));
     format_hint(&message, use_color)
+}
+
+pub fn format_label_later_hint(id: &str, use_color: bool) -> String {
+    let label_cmd = format_command(&format!("label set --id {id} --to work"), use_color);
+    format_hint(
+        &UI_HINT_ADD_LABEL_LATER.replace("{label_cmd}", &label_cmd),
+        use_color,
+    )
 }
 
 pub fn format_unsaved_warning(use_color: bool) -> Vec<String> {

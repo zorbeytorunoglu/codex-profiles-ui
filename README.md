@@ -96,8 +96,12 @@ rm ~/.local/bin/codex-profiles
 | `codex-profiles save [options]` | Save the current `auth.json` as a profile. Use `--label <name>` to label it. |
 | `codex-profiles load [options]` | Load a profile without re-login. Use `--label <name>`, `--id <profile-id>`, and `--force` as needed. |
 | `codex-profiles list [options]` | List saved profiles. Use `--show-id` or `--json` for alternate output. |
+| `codex-profiles label set [options]` | Add or replace a label on a saved profile. |
+| `codex-profiles label clear [options]` | Remove a label from a saved profile. |
 | `codex-profiles status [options]` | Show usage for the current profile, or all saved profiles with `--all`. |
 | `codex-profiles delete [options]` | Delete profiles. Use `--label <name>`, repeat `--id <profile-id>`, and `--yes` as needed. |
+
+Label examples: `codex-profiles label set --id <profile-id> --to work`, `codex-profiles label clear --label work`.
 
 > [!WARNING]
 > Deleting a profile does not log you out. It only removes the saved profile file.

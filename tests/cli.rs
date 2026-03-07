@@ -250,6 +250,17 @@ fn ascii_only(raw: &str) -> String {
         .join("\n")
 }
 
+fn profile_label(env: &TestEnv, id: &str) -> Option<String> {
+    let index_path = env.profiles_dir().join("profiles.json");
+    let index = fs::read_to_string(index_path).expect("read profiles.json");
+    let json: serde_json::Value = serde_json::from_str(&index).expect("parse profiles.json");
+    json.get("profiles")
+        .and_then(|profiles| profiles.get(id))
+        .and_then(|entry| entry.get("label"))
+        .and_then(|value| value.as_str())
+        .map(str::to_string)
+}
+
 fn resolve_bin_path() -> PathBuf {
     if let Ok(path) = env::var("CARGO_BIN_EXE_codex-profiles") {
         return PathBuf::from(path);
@@ -511,6 +522,78 @@ fn ui_save_duplicate_label() {
     seed_beta(&env);
     let err = env.run_expect_error(&["save", "--label", "alpha"]);
     assert!(err.contains("Label 'alpha' already exists"));
+}
+
+#[test]
+fn ui_save_without_label_shows_label_hint() {
+    let env = TestEnv::new();
+    seed_alpha(&env);
+    let output = env.run(&["save"]);
+    assert!(output.contains("Saved profile"));
+    assert!(output.contains("label set --id"));
+    assert!(output.contains(ALPHA_ID));
+}
+
+#[test]
+fn ui_label_set_by_id_command() {
+    let env = TestEnv::new();
+    seed_profiles(&env);
+    let output = env.run(&["label", "set", "--id", BETA_ID, "--to", "work"]);
+    assert!(output.contains("Set label 'work'"));
+    assert!(output.contains(BETA_ID));
+    assert_eq!(profile_label(&env, BETA_ID), Some("work".to_string()));
+}
+
+#[test]
+fn ui_label_set_by_label_command() {
+    let env = TestEnv::new();
+    seed_profiles(&env);
+    let output = env.run(&["label", "set", "--label", "alpha", "--to", "personal"]);
+    assert!(output.contains("Set label 'personal'"));
+    assert!(output.contains(ALPHA_ID));
+    assert_eq!(profile_label(&env, ALPHA_ID), Some("personal".to_string()));
+}
+
+#[test]
+fn ui_label_clear_by_label_command() {
+    let env = TestEnv::new();
+    seed_profiles(&env);
+    let output = env.run(&["label", "clear", "--label", "beta"]);
+    assert!(output.contains("Cleared label"));
+    assert!(output.contains(BETA_ID));
+    assert_eq!(profile_label(&env, BETA_ID), None);
+}
+
+#[test]
+fn ui_label_set_conflict() {
+    let env = TestEnv::new();
+    seed_profiles(&env);
+    let err = env.run_expect_error(&["label", "set", "--id", BETA_ID, "--to", "alpha"]);
+    assert!(err.contains("Label 'alpha' already exists"));
+}
+
+#[test]
+fn ui_label_set_empty_label() {
+    let env = TestEnv::new();
+    seed_profiles(&env);
+    let err = env.run_expect_error(&["label", "set", "--id", BETA_ID, "--to", "   "]);
+    assert!(err.contains("Label cannot be empty"));
+}
+
+#[test]
+fn ui_label_set_id_not_found() {
+    let env = TestEnv::new();
+    seed_profiles(&env);
+    let err = env.run_expect_error(&["label", "set", "--id", "missing-id", "--to", "work"]);
+    assert!(err.contains("Profile id 'missing-id'"));
+}
+
+#[test]
+fn ui_label_clear_label_not_found() {
+    let env = TestEnv::new();
+    seed_profiles(&env);
+    let err = env.run_expect_error(&["label", "clear", "--label", "missing"]);
+    assert!(err.contains("Label 'missing' was not found"));
 }
 
 #[test]

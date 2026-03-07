@@ -44,6 +44,11 @@ pub enum Commands {
         #[arg(long, conflicts_with = "json")]
         show_id: bool,
     },
+    /// Manage saved profile labels
+    Label {
+        #[command(subcommand)]
+        command: LabelCommands,
+    },
     /// Show usage details for the current profile
     Status {
         /// Show usage for all saved profiles
@@ -69,6 +74,35 @@ pub enum Commands {
     },
 }
 
+#[derive(Subcommand)]
+pub enum LabelCommands {
+    /// Set or replace a label on a saved profile
+    Set {
+        /// Select the profile matching this existing label
+        #[arg(value_name = "label")]
+        #[arg(long, conflicts_with = "id", required_unless_present = "id")]
+        label: Option<String>,
+        /// Select the profile matching this exact id
+        #[arg(value_name = "profile-id")]
+        #[arg(long, conflicts_with = "label", required_unless_present = "label")]
+        id: Option<String>,
+        /// New label to assign
+        #[arg(long, value_name = "label")]
+        to: String,
+    },
+    /// Clear the label on a saved profile
+    Clear {
+        /// Select the profile matching this existing label
+        #[arg(value_name = "label")]
+        #[arg(long, conflicts_with = "id", required_unless_present = "id")]
+        label: Option<String>,
+        /// Select the profile matching this exact id
+        #[arg(value_name = "profile-id")]
+        #[arg(long, conflicts_with = "label", required_unless_present = "label")]
+        id: Option<String>,
+    },
+}
+
 pub fn command_with_examples() -> Command {
     let name = command_name();
     let mut cmd = Cli::command();
@@ -79,6 +113,6 @@ pub fn command_with_examples() -> Command {
 
 fn examples_root(name: &str) -> String {
     format!(
-        "Examples:\n  {name} save --label work\n  {name} load --label work\n  {name} load --id mail@example.com-team --force\n  {name} list\n  {name} list --json\n  {name} status\n  {name} delete --label work\n  {name} delete --id mail@example.com-team --yes"
+        "Examples:\n  {name} save --label work\n  {name} load --label work\n  {name} load --id mail@example.com-team --force\n  {name} list\n  {name} list --json\n  {name} label set --id mail@example.com-team --to work\n  {name} label clear --label work\n  {name} status\n  {name} delete --label work\n  {name} delete --id mail@example.com-team --yes"
     )
 }

@@ -65,6 +65,8 @@ pub const PROFILE_MSG_LOADED_WITH: &str = "Loaded profile {}";
 pub const PROFILE_MSG_DELETED_WITH: &str = "Deleted profile {}";
 pub const PROFILE_MSG_DELETED_COUNT: &str = "Deleted {} profiles.";
 pub const PROFILE_MSG_REMOVED_INVALID: &str = "Removed invalid profile {} ({})";
+pub const PROFILE_MSG_LABEL_SET: &str = "Set label '{}' for profile {}";
+pub const PROFILE_MSG_LABEL_CLEARED: &str = "Cleared label for profile {}";
 
 pub const PROFILE_ERR_SELECTED_INVALID: &str = "Error: Selected profile is invalid: {}";
 pub const PROFILE_ERR_FAILED_DELETE: &str = "Error: Failed to delete profile: {}";
@@ -126,6 +128,8 @@ pub const UI_HINT_LOGIN_AND_SAVE: &str = "Run {login} • then {save}.";
 pub const UI_HINT_SAVE_BEFORE_LOADING: &str = "Run {save} before loading.";
 pub const UI_HINT_LOGIN_SAVE_BEFORE_LOADING: &str = "Run {login}, then {save} before loading.";
 pub const UI_HINT_FORCE_LOAD: &str = "Re-run with {force} to continue without saving.";
+pub const UI_HINT_ADD_LABEL_LATER: &str =
+    "Add a label later with {label_cmd} for easier later selection.";
 pub const UI_HINT_LIST_PROFILES: &str = "Run {list} to see saved profiles.";
 pub const UI_NORMALIZED_NOT_LOGGED_IN: &str = "Not logged in. Run `codex login`.";
 pub const UI_NORMALIZED_AUTH_INVALID: &str = "Auth file is invalid. Run `codex login`.";

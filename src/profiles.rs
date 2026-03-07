@@ -22,19 +22,20 @@ use crate::{
     PROFILE_ERR_REMOVE_INVALID, PROFILE_ERR_RENAME_PROFILE, PROFILE_ERR_SELECTED_INVALID,
     PROFILE_ERR_SERIALIZE_INDEX, PROFILE_ERR_SYNC_CURRENT, PROFILE_ERR_TTY_REQUIRED,
     PROFILE_ERR_WRITE_INDEX, PROFILE_LOAD_HELP, PROFILE_MSG_DELETED_COUNT,
-    PROFILE_MSG_DELETED_WITH, PROFILE_MSG_LOADED_WITH, PROFILE_MSG_NOT_FOUND,
-    PROFILE_MSG_REMOVED_INVALID, PROFILE_MSG_SAVED, PROFILE_MSG_SAVED_WITH, PROFILE_PROMPT_CANCEL,
-    PROFILE_PROMPT_CONTINUE_WITHOUT_SAVING, PROFILE_PROMPT_DELETE_MANY, PROFILE_PROMPT_DELETE_ONE,
-    PROFILE_PROMPT_DELETE_SELECTED, PROFILE_PROMPT_SAVE_AND_CONTINUE, PROFILE_STATUS_API_HIDDEN,
-    PROFILE_STATUS_ERROR_HIDDEN, PROFILE_SUMMARY_AUTH_ERROR, PROFILE_SUMMARY_ERROR,
-    PROFILE_SUMMARY_FILE_MISSING, PROFILE_SUMMARY_USAGE_ERROR, PROFILE_UNSAVED_NO_MATCH,
-    PROFILE_WARN_CURRENT_NOT_SAVED_REASON, UI_ERROR_PREFIX, UI_ERROR_TWO_LINE,
+    PROFILE_MSG_DELETED_WITH, PROFILE_MSG_LABEL_CLEARED, PROFILE_MSG_LABEL_SET,
+    PROFILE_MSG_LOADED_WITH, PROFILE_MSG_NOT_FOUND, PROFILE_MSG_REMOVED_INVALID, PROFILE_MSG_SAVED,
+    PROFILE_MSG_SAVED_WITH, PROFILE_PROMPT_CANCEL, PROFILE_PROMPT_CONTINUE_WITHOUT_SAVING,
+    PROFILE_PROMPT_DELETE_MANY, PROFILE_PROMPT_DELETE_ONE, PROFILE_PROMPT_DELETE_SELECTED,
+    PROFILE_PROMPT_SAVE_AND_CONTINUE, PROFILE_STATUS_API_HIDDEN, PROFILE_STATUS_ERROR_HIDDEN,
+    PROFILE_SUMMARY_AUTH_ERROR, PROFILE_SUMMARY_ERROR, PROFILE_SUMMARY_FILE_MISSING,
+    PROFILE_SUMMARY_USAGE_ERROR, PROFILE_UNSAVED_NO_MATCH, PROFILE_WARN_CURRENT_NOT_SAVED_REASON,
+    UI_ERROR_PREFIX, UI_ERROR_TWO_LINE,
 };
 use crate::{
-    CANCELLED_MESSAGE, format_action, format_entry_header, format_error, format_list_hint,
-    format_no_profiles, format_save_before_load_or_force, format_unsaved_warning, format_warning,
-    inquire_select_render_config, is_inquire_cancel, is_plain, normalize_error, print_output_block,
-    style_text, use_color_stderr, use_color_stdout,
+    CANCELLED_MESSAGE, format_action, format_entry_header, format_error, format_label_later_hint,
+    format_list_hint, format_no_profiles, format_save_before_load_or_force, format_unsaved_warning,
+    format_warning, inquire_select_render_config, is_inquire_cancel, is_plain, normalize_error,
+    print_output_block, style_text, use_color_stderr, use_color_stdout,
 };
 use crate::{
     Paths, USAGE_UNAVAILABLE_API_KEY_DETAIL, USAGE_UNAVAILABLE_API_KEY_TITLE, command_name,
@@ -76,13 +77,59 @@ pub fn save_profile(paths: &Paths, label: Option<String>) -> Result<(), String> 
     );
     store.save(paths)?;
 
-    let info = profile_info(Some(&tokens), label_display, true, use_color);
+    let info = profile_info(Some(&tokens), label_display.clone(), true, use_color);
     let message = if info.email.is_some() {
         crate::msg1(PROFILE_MSG_SAVED_WITH, info.display)
     } else {
         PROFILE_MSG_SAVED.to_string()
     };
-    let message = format_action(&message, use_color);
+    let mut message = format_action(&message, use_color);
+    if label_display.is_none() {
+        message.push('\n');
+        message.push_str(&format_label_later_hint(&id, use_color));
+    }
+    print_output_block(&message);
+    Ok(())
+}
+
+pub fn set_profile_label(
+    paths: &Paths,
+    label: Option<String>,
+    id: Option<String>,
+    to: String,
+) -> Result<(), String> {
+    let use_color = use_color_stdout();
+    let mut store = ProfileStore::load(paths)?;
+    let target_id = resolve_label_target_id(&store, label.as_deref(), id.as_deref())?;
+    let target_label = trim_label(&to)?.to_string();
+
+    assign_label(&mut store.labels, &target_label, &target_id)?;
+    store.save(paths)?;
+
+    let message = format_action(
+        &crate::msg2(PROFILE_MSG_LABEL_SET, target_label, target_id),
+        use_color,
+    );
+    print_output_block(&message);
+    Ok(())
+}
+
+pub fn clear_profile_label(
+    paths: &Paths,
+    label: Option<String>,
+    id: Option<String>,
+) -> Result<(), String> {
+    let use_color = use_color_stdout();
+    let mut store = ProfileStore::load(paths)?;
+    let target_id = resolve_label_target_id(&store, label.as_deref(), id.as_deref())?;
+
+    remove_labels_for_id(&mut store.labels, &target_id);
+    store.save(paths)?;
+
+    let message = format_action(
+        &crate::msg1(PROFILE_MSG_LABEL_CLEARED, target_id),
+        use_color,
+    );
     print_output_block(&message);
     Ok(())
 }
@@ -566,16 +613,16 @@ pub fn prune_labels(labels: &mut Labels, profiles_dir: &Path) {
 
 pub fn assign_label(labels: &mut Labels, label: &str, id: &str) -> Result<(), String> {
     let trimmed = trim_label(label)?;
-    if let Some(existing) = labels.get(trimmed) {
-        if existing == id {
-            return Ok(());
-        }
+    if let Some(existing) = labels.get(trimmed)
+        && existing != id
+    {
         return Err(crate::msg2(
             PROFILE_ERR_LABEL_EXISTS,
             trimmed,
             format_list_hint(use_color_stderr()),
         ));
     }
+    remove_labels_for_id(labels, id);
     labels.insert(trimmed.to_string(), id.to_string());
     Ok(())
 }
@@ -611,6 +658,28 @@ pub fn resolve_label_id(labels: &Labels, label: &str) -> Result<String, String> 
             format_list_hint(use_color_stderr()),
         )
     })
+}
+
+fn resolve_label_target_id(
+    store: &ProfileStore,
+    label: Option<&str>,
+    id: Option<&str>,
+) -> Result<String, String> {
+    if let Some(label) = label {
+        return resolve_label_id(&store.labels, label);
+    }
+
+    let Some(id) = id else {
+        unreachable!("clap enforces label target selector")
+    };
+    if store.profiles_index.profiles.contains_key(id) {
+        return Ok(id.to_string());
+    }
+    Err(crate::msg2(
+        PROFILE_ERR_ID_NO_MATCH,
+        id,
+        format_list_hint(use_color_stderr()),
+    ))
 }
 
 pub fn profile_files(profiles_dir: &Path) -> Result<Vec<PathBuf>, String> {
