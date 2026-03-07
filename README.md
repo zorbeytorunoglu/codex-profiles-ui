@@ -27,8 +27,8 @@ personal and team accounts across multiple organizations.
 
 ## Install
 
-> [!IMPORTANT]
-> Requires [Codex CLI](https://developers.openai.com/codex/cli/) (with ChatGPT subscription or OpenAI API key).
+> [!NOTE]
+> `npm`, `bun`, and the manual installer use prebuilt native binaries. `cargo install --locked codex-profiles` builds locally from source if you prefer not to run prebuilt binaries.
 
 > [!TIP]
 > Looking for a Teams promo? [See details](https://www.reddit.com/r/ChatGPTPromptGenius/comments/1lo7v0u/chatgpt_team_for_1_first_month_up_to_5_users/)
@@ -48,12 +48,12 @@ bun install -g codex-profiles
 ### Cargo
 
 ```bash
-cargo install codex-profiles
+cargo install --locked codex-profiles
 ```
 
 ### Manual Install
 
-Automatically detects your OS/architecture, downloads the correct binary, verifies checksums:
+Automatically detects your OS/architecture, downloads the correct binary, and verifies checksums when verification tooling is available:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/midhunmonachan/codex-profiles/main/install.sh | bash
@@ -177,14 +177,12 @@ Loaded profile mail@company.com (Team)
 >
 > ```bash
 > # Check version
-> codex-profiles --help
+> codex-profiles --version
 >
-> # Verify Codex CLI is detected
+> # Verify the command runs
 > codex-profiles list
-> # Should show: "No profiles saved yet" (not an error about missing Codex CLI)
+> # Should show: "No saved profiles." if you have not saved any profiles yet
 > ```
->
-> If you see "Codex CLI not found", install it from [here](https://developers.openai.com/codex/cli/).
 </details>
 
 <details>

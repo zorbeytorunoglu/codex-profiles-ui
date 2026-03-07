@@ -32,6 +32,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+bash install.sh --help >/dev/null
 cargo fetch --locked
 cargo fmt --all -- --check
 cargo clippy --all-targets --locked -- -D warnings

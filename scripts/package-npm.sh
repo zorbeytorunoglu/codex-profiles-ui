@@ -86,7 +86,11 @@ for artifact_dir in "${artifact_dirs[@]}"; do
   "os": ["${os}"],
   "cpu": ["${cpu}"],
   "files": ["bin"],
-  "description": "Platform binary for codex-profiles"
+  "description": "Platform binary for codex-profiles",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/midhunmonachan/codex-profiles.git"
+  }
 }
 JSON
 done

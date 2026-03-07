@@ -109,7 +109,26 @@ if "optionalDependencies" in data:
     }
 path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 PY
-  sed -i 's|VERSION="${CODEX_PROFILES_VERSION:-[^}]*}"|VERSION="${CODEX_PROFILES_VERSION:-${new_ver}}"|' install.sh
+  python3 - "${new_ver}" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+new_ver = sys.argv[1]
+path = Path("install.sh")
+text = path.read_text(encoding="utf-8")
+replacement = f'VERSION="${{CODEX_PROFILES_VERSION:-{new_ver}}}"'
+text, count = re.subn(
+    r'^VERSION="\$\{CODEX_PROFILES_VERSION:-[^}]+\}"$',
+    replacement,
+    text,
+    count=1,
+    flags=re.M,
+)
+if count != 1:
+    raise SystemExit("Failed to update VERSION default in install.sh")
+path.write_text(text, encoding="utf-8")
+PY
 
   git add Cargo.toml package.json install.sh
   git commit -m "chore: bump version to v${new_ver}"

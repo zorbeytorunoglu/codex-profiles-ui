@@ -7,8 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
-  id-token: write
+  contents: read
 
 concurrency:
   group: release
@@ -52,14 +51,14 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
       - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7
         with:
-          toolchain: stable
+          toolchain: 1.94.0
           components: rustfmt, clippy
       - uses: taiki-e/install-action@aba36d755ec7ca22d38b12111787c26115943952 # v2
         with:
-          tool: cargo-audit
+          tool: cargo-audit@0.22.1
       - uses: taiki-e/install-action@aba36d755ec7ca22d38b12111787c26115943952 # v2
         with:
-          tool: cargo-nextest
+          tool: cargo-nextest@0.9.129
       - name: Cache cargo bin
         uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5
         continue-on-error: true
@@ -104,7 +103,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
       - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7
         with:
-          toolchain: stable
+          toolchain: 1.94.0
           targets: ${{ matrix.target }}
       - name: Cache cargo bin
         uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5
@@ -136,14 +135,19 @@ jobs:
   package:
     needs: [build, verify]
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
       - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7
         with:
-          toolchain: stable
+          toolchain: 1.94.0
       - uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238 # v6
         with:
-          node-version: 20
+          node-version: 24.14.0
+          registry-url: https://registry.npmjs.org
       - name: Cache cargo bin
         uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5
         continue-on-error: true
@@ -163,6 +167,22 @@ jobs:
           version="${GITHUB_REF_NAME#v}"
           scripts/release-artifacts.sh "${version}" dist/artifacts dist
           scripts/verify-artifacts.sh "${version}" dist
+
+      - name: Capture tagged source revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "RELEASE_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      - name: Generate artifact attestations
+        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
+        with:
+          subject-path: |
+            dist/release/*
+            dist/npm-packages/*.tgz
+            dist/homebrew/*.rb
+            dist/cargo/*.crate
+            dist/checksums/*
 
       - name: Commit checksums to repo
         shell: bash
@@ -196,6 +216,13 @@ jobs:
           git commit -m "chore: add checksums for v${version}"
           git push origin main
 
+      - name: Restore tagged source for crates.io publish
+        if: ${{ !contains(github.ref_name, '-') }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git checkout --detach "${RELEASE_SHA}"
+
       - name: Publish to crates.io
         if: ${{ !contains(github.ref_name, '-') }}
         env:
@@ -218,32 +245,37 @@ jobs:
 
       - name: Publish to npm
         if: ${{ !contains(github.ref_name, '-') }}
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
+          set -euo pipefail
           # Safety gate: only publish from production repository
           if [[ "${GITHUB_REPOSITORY}" != "midhunmonachan/codex-profiles" ]]; then
             echo "Skipping npm publish: not production repository (current: ${GITHUB_REPOSITORY})"
             exit 0
           fi
-          
-          if [ -z "${NODE_AUTH_TOKEN}" ]; then
-            echo "Warning: NPM_TOKEN not set, skipping npm publish"
-            echo "Add your token at: https://github.com/${{ github.repository }}/settings/secrets/actions"
-            exit 0
-          fi
-          
-          echo "Publishing to npm from ${GITHUB_REPOSITORY}..."
+
+          echo "Publishing to npm from ${GITHUB_REPOSITORY} via trusted publishing..."
+          node --version
+          npm_version="$(npm --version)"
+          echo "npm ${npm_version}"
+          python3 - "${npm_version}" <<'PY'
+          import sys
+
+          required = (11, 5, 1)
+          got = tuple(int(part) for part in sys.argv[1].split(".")[:3])
+          if got < required:
+              raise SystemExit(
+                  f"npm {sys.argv[1]} is too old for trusted publishing; need >= 11.5.1"
+              )
+          PY
           version="${GITHUB_REF_NAME#v}"
-          echo "//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}" > ~/.npmrc
-          
-          # Publish main package
-          npm publish dist/npm-packages/codex-profiles-${version}.tgz --access public
-          
+
           # Publish platform packages
           for pkg in dist/npm-packages/codex-profiles-*-*.tgz; do
-            npm publish "$pkg" --access public
+            npm publish "$pkg" --access public --provenance
           done
+
+          # Publish main package after platform packages are available
+          npm publish "dist/npm-packages/codex-profiles-${version}.tgz" --access public --provenance
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b # v2

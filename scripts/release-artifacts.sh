@@ -147,7 +147,7 @@ files=(
   "${homebrew_dir}"/*.rb
 )
 for file in "${files[@]}"; do
-  rel_path="${file#${out_dir}/}"
+  rel_path="${file#"${out_dir}"/}"
   printf "%s  %s\n" "$(sha256_file "${file}")" "${rel_path}" >> "${checksums_file}"
 done
 shopt -u nullglob

@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-VERSION="${CODEX_PROFILES_VERSION:-${new_ver}}"
+VERSION="${CODEX_PROFILES_VERSION:-0.2.0}"
 REPO="midhunmonachan/codex-profiles"
 INSTALL_DIR="${CODEX_PROFILES_INSTALL_DIR:-$HOME/.local/bin}"
 
@@ -151,7 +151,7 @@ main() {
     fi
     local archive_url="$base_url/$archive_name"
     
-    local checksum_url="https://raw.githubusercontent.com/$REPO/main/checksums/v${VERSION}.txt"
+    local checksum_url="$base_url/SHA256SUMS"
     
     TMPDIR_INSTALL="$(mktemp -d)"
     trap cleanup EXIT
@@ -163,13 +163,13 @@ main() {
     info "Downloading binary..."
     download_file "$archive_url" "$archive_path" "true" || error "failed to download binary from $archive_url"
     
-    info "Downloading checksums from repo..."
+    info "Downloading checksums from release..."
     if ! download_file "$checksum_url" "$checksum_path" "false"; then
         if [[ "${CODEX_PROFILES_ALLOW_INSECURE_INSTALL:-0}" == "1" ]]; then
-            warn "Could not download checksum file from repo"
+            warn "Could not download checksum file from release"
             warn "Proceeding without verification because CODEX_PROFILES_ALLOW_INSECURE_INSTALL=1"
         else
-            error "could not download checksum file from repo; aborting install.\nSet CODEX_PROFILES_ALLOW_INSECURE_INSTALL=1 to bypass (not recommended)."
+            error "could not download checksum file from release; aborting install.\nSet CODEX_PROFILES_ALLOW_INSECURE_INSTALL=1 to bypass (not recommended)."
         fi
     else
         verify_checksum "$archive_path" "$checksum_path"
@@ -256,8 +256,8 @@ Environment variables:
   NO_COLOR                        Disable colored output
 
 Security:
-  Checksums are downloaded from the git repository (separate from binaries)
-  to protect against compromised release artifacts.
+  Checksums are downloaded from the tagged GitHub release and used to verify
+  the downloaded binary before installation.
 
 Examples:
   $0                              # Install latest (default: v$VERSION)

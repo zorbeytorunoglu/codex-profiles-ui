@@ -25,7 +25,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7
         with:
-          toolchain: stable
+          toolchain: 1.94.0
 
       - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
         continue-on-error: true
@@ -42,7 +42,7 @@ jobs:
       - name: Install nextest
         uses: taiki-e/install-action@aba36d755ec7ca22d38b12111787c26115943952 # v2
         with:
-          tool: cargo-nextest
+          tool: cargo-nextest@0.9.129
 
       - name: Run checks
         run: scripts/check.sh --no-audit
