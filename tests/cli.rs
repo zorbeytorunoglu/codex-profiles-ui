@@ -5,10 +5,10 @@ use std::env;
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 const ALPHA_ACCOUNT: &str = "acct-alpha";
 const ALPHA_EMAIL: &str = "alpha@example.com";
@@ -26,25 +26,38 @@ const FREE_PLAN: &str = "free";
 const FREE_TOKEN: &str = "token-free";
 
 struct TestEnv {
-    home: PathBuf,
+    home: tempfile::TempDir,
+    bin_path: PathBuf,
 }
 
 impl TestEnv {
     fn new() -> Self {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("time")
-            .as_nanos();
-        let home = env::temp_dir().join(format!(
-            "codex-profiles-test-{}-{nanos}",
-            std::process::id()
-        ));
-        fs::create_dir_all(home.join(".codex")).expect("create codex dir");
-        Self { home }
+        let home = tempfile::Builder::new()
+            .prefix("codex-profiles-test-")
+            .tempdir()
+            .expect("create temp home");
+        fs::create_dir_all(home.path().join(".codex")).expect("create codex dir");
+
+        let source_bin = resolve_bin_path();
+        let bin_dir = home.path().join(".test-bin");
+        fs::create_dir_all(&bin_dir).expect("create test bin dir");
+        let bin_name = source_bin.file_name().expect("binary file name");
+        let bin_path = bin_dir.join(bin_name);
+        fs::copy(&source_bin, &bin_path).expect("copy test binary");
+        let permissions = fs::metadata(&source_bin)
+            .expect("source binary metadata")
+            .permissions();
+        fs::set_permissions(&bin_path, permissions).expect("set test binary permissions");
+
+        Self { home, bin_path }
+    }
+
+    fn home_path(&self) -> &Path {
+        self.home.path()
     }
 
     fn codex_dir(&self) -> PathBuf {
-        self.home.join(".codex")
+        self.home_path().join(".codex")
     }
 
     fn profiles_dir(&self) -> PathBuf {
@@ -164,11 +177,10 @@ impl TestEnv {
     }
 
     fn run_output_with_env(&self, args: &[&str], extra_env: &[(&str, &str)]) -> Output {
-        let bin = resolve_bin_path();
-        let mut cmd = Command::new(bin);
+        let mut cmd = Command::new(&self.bin_path);
         cmd.args(args)
-            .env("HOME", &self.home)
-            .env("CODEX_PROFILES_HOME", &self.home)
+            .env("HOME", self.home_path())
+            .env("CODEX_PROFILES_HOME", self.home_path())
             .env("CODEX_PROFILES_COMMAND", "codex-profiles")
             .env("CODEX_PROFILES_SKIP_UPDATE", "1")
             .env("NO_COLOR", "1")
@@ -179,8 +191,8 @@ impl TestEnv {
             cmd.env(key, value);
         }
         if cfg!(windows) {
-            cmd.env("USERPROFILE", &self.home);
-            if let Some(home_str) = self.home.to_str()
+            cmd.env("USERPROFILE", self.home_path());
+            if let Some(home_str) = self.home_path().to_str()
                 && let Some(idx) = home_str.find(':')
             {
                 let (drive, rest) = home_str.split_at(idx + 1);
@@ -206,12 +218,6 @@ impl TestEnv {
             );
         }
         ascii_only(String::from_utf8_lossy(&output.stdout).as_ref())
-    }
-}
-
-impl Drop for TestEnv {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.home);
     }
 }
 
@@ -276,6 +282,17 @@ fn resolve_bin_path() -> PathBuf {
         "codex-profiles"
     };
     target_dir.join(bin_name)
+}
+
+#[test]
+fn test_env_uses_unique_temp_dirs_and_binary_copies() {
+    let first = TestEnv::new();
+    let second = TestEnv::new();
+
+    assert_ne!(first.home_path(), second.home_path());
+    assert_ne!(first.bin_path, second.bin_path);
+    assert!(first.bin_path.is_file());
+    assert!(second.bin_path.is_file());
 }
 
 fn seed_profiles(env: &TestEnv) {
