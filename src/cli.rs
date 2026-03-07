@@ -29,7 +29,14 @@ pub enum Commands {
         label: Option<String>,
     },
     /// List saved profiles
-    List,
+    List {
+        /// Print machine-readable JSON output
+        #[arg(long)]
+        json: bool,
+        /// Show profile ids in human-readable output
+        #[arg(long, conflicts_with = "json")]
+        show_id: bool,
+    },
     /// Show usage details for the current profile
     Status {
         /// Show usage for all saved profiles
@@ -61,6 +68,6 @@ pub fn command_with_examples() -> Command {
 
 fn examples_root(name: &str) -> String {
     format!(
-        "Examples:\n  {name} save --label work\n  {name} load --label work\n  {name} list\n  {name} status\n  {name} delete --label work"
+        "Examples:\n  {name} save --label work\n  {name} load --label work\n  {name} list\n  {name} list --json\n  {name} status\n  {name} delete --label work"
     )
 }

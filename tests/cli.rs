@@ -652,6 +652,98 @@ fn ui_list_command() {
 }
 
 #[test]
+fn ui_list_show_id_command() {
+    let env = TestEnv::new();
+    seed_profiles(&env);
+    let output = env.run(&["list", "--show-id"]);
+    assert!(output.contains("[id: alpha@example.com-team]"));
+    assert!(output.contains("[id: beta@example.com-team]"));
+}
+
+#[test]
+fn ui_list_json_exposes_ids_for_scripting() {
+    let env = TestEnv::new();
+    fs::create_dir_all(env.profiles_dir()).expect("create profiles dir");
+    write_profile_tokens(
+        &env,
+        ALPHA_ID,
+        serde_json::json!({
+            "account_id": ALPHA_ACCOUNT,
+            "id_token": build_id_token(ALPHA_EMAIL, ALPHA_PLAN),
+            "access_token": ALPHA_TOKEN,
+            "refresh_token": "refresh-alpha"
+        }),
+    );
+    write_profile_tokens(
+        &env,
+        BETA_ID,
+        serde_json::json!({
+            "account_id": BETA_ACCOUNT,
+            "id_token": build_id_token(BETA_EMAIL, BETA_PLAN),
+            "access_token": BETA_TOKEN,
+            "refresh_token": "refresh-beta"
+        }),
+    );
+    env.write_profiles_index(
+        &[(ALPHA_ID, 200), (BETA_ID, 100)],
+        &[(ALPHA_ID, "alpha")],
+        None,
+    );
+    seed_current(&env);
+
+    let output = env.run(&["list", "--json"]);
+    let json: serde_json::Value = serde_json::from_str(&output).expect("parse list json");
+    let profiles = json
+        .get("profiles")
+        .and_then(|value| value.as_array())
+        .expect("profiles array");
+
+    assert_eq!(profiles.len(), 3);
+    assert_eq!(profiles[0].get("id").unwrap(), &serde_json::Value::Null);
+    assert_eq!(
+        profiles[0].get("is_current").unwrap(),
+        &serde_json::json!(true)
+    );
+    assert_eq!(
+        profiles[0].get("is_saved").unwrap(),
+        &serde_json::json!(false)
+    );
+    assert_eq!(
+        profiles[0].get("email").unwrap(),
+        &serde_json::json!("current@example.com")
+    );
+
+    assert_eq!(profiles[1].get("id").unwrap(), &serde_json::json!(ALPHA_ID));
+    assert_eq!(
+        profiles[1].get("label").unwrap(),
+        &serde_json::json!("alpha")
+    );
+    assert_eq!(
+        profiles[1].get("is_saved").unwrap(),
+        &serde_json::json!(true)
+    );
+
+    assert_eq!(profiles[2].get("id").unwrap(), &serde_json::json!(BETA_ID));
+    assert_eq!(profiles[2].get("label").unwrap(), &serde_json::Value::Null);
+}
+
+#[test]
+fn ui_list_json_empty_profiles() {
+    let env = TestEnv::new();
+    let output = env.run(&["list", "--json"]);
+    let json: serde_json::Value = serde_json::from_str(&output).expect("parse list json");
+    assert_eq!(json, serde_json::json!({ "profiles": [] }));
+}
+
+#[test]
+fn ui_list_rejects_json_with_show_id() {
+    let env = TestEnv::new();
+    let err = env.run_expect_error(&["list", "--json", "--show-id"]);
+    assert!(err.contains("--json"));
+    assert!(err.contains("--show-id"));
+}
+
+#[test]
 fn ui_list_free_plan() {
     let env = TestEnv::new();
     seed_free(&env);

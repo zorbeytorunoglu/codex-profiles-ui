@@ -68,7 +68,7 @@ fn run(cli: Cli) -> Result<(), String> {
     match cli.command {
         Commands::Save { label } => save_profile(&paths, label),
         Commands::Load { label } => load_profile(&paths, label),
-        Commands::List => list_profiles(&paths),
+        Commands::List { json, show_id } => list_profiles(&paths, json, show_id),
         Commands::Status { all, show_errors } => status_profiles(&paths, all, show_errors),
         Commands::Delete { yes, label } => delete_profile(&paths, yes, label),
     }
@@ -172,7 +172,10 @@ mod tests {
         let _skip = set_env_guard("CODEX_PROFILES_SKIP_UPDATE", Some("1"));
         let cli = Cli {
             plain: true,
-            command: Commands::List,
+            command: Commands::List {
+                json: false,
+                show_id: false,
+            },
         };
         run(cli).unwrap();
     }

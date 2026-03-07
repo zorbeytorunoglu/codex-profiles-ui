@@ -61,19 +61,6 @@ curl -fsSL https://raw.githubusercontent.com/midhunmonachan/codex-profiles/main/
 
 ## Uninstall
 
-> [!WARNING]
-> Legacy script support is ending. Remove `cx` and use this version instead.
->
-> ```bash
-> rm ~/.local/bin/cx
-> ```
->
-> If you installed with a custom command name (`mycmd`), remove that name instead:
->
-> ```bash
-> rm ~/.local/bin/mycmd
-> ```
-
 ### NPM
 
 ```bash
@@ -107,7 +94,7 @@ rm ~/.local/bin/codex-profiles
 | --- | --- |
 | `codex-profiles save [--label <name>]` | Save the current `auth.json` as a profile, optionally labeled. |
 | `codex-profiles load [--label <name>]` | Load a profile from the picker without re-login (or by label). |
-| `codex-profiles list` | List saved profiles. |
+| `codex-profiles list [--show-id | --json]` | List saved profiles with optional ids or JSON output. |
 | `codex-profiles status [--all] [--show-errors]` | Show usage for the current profile, or all saved profiles (`--all`). |
 | `codex-profiles delete [--yes] [--label <name>]` | Delete profiles from the picker (or by label). |
 

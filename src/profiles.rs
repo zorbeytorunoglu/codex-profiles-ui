@@ -209,10 +209,10 @@ pub fn delete_profile(paths: &Paths, yes: bool, label: Option<String>) -> Result
     Ok(())
 }
 
-pub fn list_profiles(paths: &Paths) -> Result<(), String> {
+pub fn list_profiles(paths: &Paths, json: bool, show_id: bool) -> Result<(), String> {
     let snapshot = load_snapshot(paths, false)?;
     let current_saved_id = current_saved_id(paths, &snapshot.tokens);
-    let ctx = ListCtx::new(paths, false, true);
+    let ctx = ListCtx::new(paths, false, true, show_id);
 
     let ordered = ordered_profile_ids(&snapshot, current_saved_id.as_deref());
     let current_entry = make_current(
@@ -224,6 +224,12 @@ pub fn list_profiles(paths: &Paths) -> Result<(), String> {
     );
     let has_saved = !ordered.is_empty();
     if !has_saved {
+        if json {
+            if let Some(entry) = current_entry {
+                return print_list_json(&[entry]);
+            }
+            return print_list_json(&[]);
+        }
         if let Some(entry) = current_entry {
             let lines = render_entries(&[entry], &ctx, false);
             print_output_block(&lines.join("\n"));
@@ -240,9 +246,18 @@ pub fn list_profiles(paths: &Paths) -> Result<(), String> {
         .collect();
     let list_entries = make_entries(&filtered, &snapshot, None, &ctx);
 
+    if json {
+        let mut entries = Vec::new();
+        if let Some(entry) = current_entry {
+            entries.push(entry);
+        }
+        entries.extend(list_entries);
+        return print_list_json(&entries);
+    }
+
     let mut lines = Vec::new();
-    if let Some(entry) = current_entry {
-        lines.extend(render_entries(&[entry], &ctx, false));
+    if let Some(entry) = current_entry.as_ref() {
+        lines.extend(render_entries(std::slice::from_ref(entry), &ctx, false));
         if !list_entries.is_empty() {
             push_separator(&mut lines, false);
         }
@@ -261,7 +276,7 @@ pub fn status_profiles(paths: &Paths, all: bool, show_errors: bool) -> Result<()
     let current_saved_id = snapshot
         .as_ref()
         .and_then(|snap| current_saved_id(paths, &snap.tokens));
-    let ctx = ListCtx::new(paths, true, false);
+    let ctx = ListCtx::new(paths, true, false, false);
     let empty_labels = Labels::new();
     let labels = snapshot
         .as_ref()
@@ -286,7 +301,7 @@ pub fn status_profiles(paths: &Paths, all: bool, show_errors: bool) -> Result<()
 fn status_all_profiles(paths: &Paths, show_errors: bool) -> Result<(), String> {
     let snapshot = load_snapshot(paths, false)?;
     let current_saved_id = current_saved_id(paths, &snapshot.tokens);
-    let ctx = ListCtx::new(paths, true, true);
+    let ctx = ListCtx::new(paths, true, true, false);
 
     let ordered = ordered_profile_ids(&snapshot, current_saved_id.as_deref());
     let filtered: Vec<String> = ordered
@@ -1340,6 +1355,11 @@ fn render_entries(entries: &[Entry], ctx: &ListCtx, allow_plain_spacing: bool) -
     for (idx, entry) in entries.iter().enumerate() {
         let mut entry_lines = Vec::new();
         let mut header = format_entry_header(&entry.display, ctx.use_color);
+        if ctx.show_id
+            && let Some(id) = entry.id.as_deref()
+        {
+            header.push_str(&format_profile_id_suffix(id, ctx.use_color));
+        }
         if ctx.show_current_marker && entry.is_current {
             header.push_str(&current_profile_marker(ctx.use_color));
         }
@@ -1385,7 +1405,12 @@ fn current_profile_marker(use_color: bool) -> String {
     })
 }
 
+fn format_profile_id_suffix(id: &str, use_color: bool) -> String {
+    style_text(&format!(" [id: {id}]"), use_color, |text| text.dimmed())
+}
+
 fn make_error(
+    id: Option<String>,
     label: Option<String>,
     index_entry: Option<&ProfileIndexEntry>,
     use_color: bool,
@@ -1393,10 +1418,16 @@ fn make_error(
     summary_label: &str,
     is_current: bool,
 ) -> Entry {
-    let display =
-        profile_info_with_fallback(None, index_entry, label, is_current, use_color).display;
+    let info = profile_info_with_fallback(None, index_entry, label.clone(), is_current, use_color);
+    let is_saved = id.is_some();
     Entry {
-        display,
+        id,
+        label,
+        email: info.email.clone(),
+        plan: info.plan.clone(),
+        is_api_key: index_entry.map(|entry| entry.is_api_key).unwrap_or(false),
+        is_saved,
+        display: info.display,
         details: vec![format_error(message)],
         error_summary: Some(error_summary(summary_label, message)),
         always_show_details: false,
@@ -1536,6 +1567,7 @@ fn make_entry(
         Some(Ok(tokens)) => tokens.clone(),
         Some(Err(err)) => {
             return make_error(
+                profile_id_from_path(profile_path),
                 label_for_error,
                 index_entry,
                 use_color,
@@ -1546,6 +1578,7 @@ fn make_entry(
         }
         None => {
             return make_error(
+                profile_id_from_path(profile_path),
                 label_for_error,
                 index_entry,
                 use_color,
@@ -1555,7 +1588,9 @@ fn make_entry(
             );
         }
     };
+    let label_value = label.clone();
     let info = profile_info(Some(&tokens), label, is_current, use_color);
+    let is_api_key = is_api_key_profile(&tokens);
     let (details, summary, _) = detail_lines(
         &mut tokens,
         info.email.as_deref(),
@@ -1564,6 +1599,12 @@ fn make_entry(
         ctx,
     );
     Entry {
+        id: profile_id_from_path(profile_path),
+        label: label_value,
+        email: info.email,
+        plan: info.plan,
+        is_api_key,
+        is_saved: true,
         display: info.display,
         details,
         error_summary: summary,
@@ -1661,6 +1702,7 @@ fn make_current(
             return Some(make_error(
                 None,
                 None,
+                None,
                 ctx.use_color,
                 &err,
                 PROFILE_SUMMARY_ERROR,
@@ -1675,8 +1717,10 @@ fn make_current(
     let effective_saved_id = current_saved_id.or(resolved_saved_id.as_deref());
     let label = effective_saved_id.and_then(|id| label_for_id(labels, id));
     let use_color = ctx.use_color;
+    let label_value = label.clone();
     let info = profile_info(Some(&tokens), label, true, use_color);
     let plan_is_free = info.is_free;
+    let is_api_key = is_api_key_profile(&tokens);
     let can_save = is_profile_ready(&tokens);
     let is_unsaved = effective_saved_id.is_none() && can_save;
     let (mut details, summary, refreshed) = detail_lines(
@@ -1702,6 +1746,12 @@ fn make_current(
     }
 
     Some(Entry {
+        id: effective_saved_id.map(str::to_string),
+        label: label_value,
+        email: info.email,
+        plan: info.plan,
+        is_api_key,
+        is_saved: effective_saved_id.is_some(),
         display: info.display,
         details,
         error_summary: summary,
@@ -1719,18 +1769,20 @@ struct ListCtx {
     now: DateTime<Local>,
     show_usage: bool,
     show_current_marker: bool,
+    show_id: bool,
     use_color: bool,
     profiles_dir: PathBuf,
     auth_path: PathBuf,
 }
 
 impl ListCtx {
-    fn new(paths: &Paths, show_usage: bool, show_current_marker: bool) -> Self {
+    fn new(paths: &Paths, show_usage: bool, show_current_marker: bool, show_id: bool) -> Self {
         Self {
             base_url: show_usage.then(|| read_base_url(paths)),
             now: Local::now(),
             show_usage,
             show_current_marker,
+            show_id,
             use_color: use_color_stdout(),
             profiles_dir: paths.profiles.clone(),
             auth_path: paths.auth.clone(),
@@ -1738,12 +1790,56 @@ impl ListCtx {
     }
 }
 
+#[derive(Clone)]
 struct Entry {
+    id: Option<String>,
+    label: Option<String>,
+    email: Option<String>,
+    plan: Option<String>,
+    is_api_key: bool,
+    is_saved: bool,
     display: String,
     details: Vec<String>,
     error_summary: Option<String>,
     always_show_details: bool,
     is_current: bool,
+}
+
+#[derive(Serialize)]
+struct ListedProfile {
+    id: Option<String>,
+    label: Option<String>,
+    email: Option<String>,
+    plan: Option<String>,
+    is_current: bool,
+    is_saved: bool,
+    is_api_key: bool,
+    error: Option<String>,
+}
+
+#[derive(Serialize)]
+struct ListedProfiles {
+    profiles: Vec<ListedProfile>,
+}
+
+fn print_list_json(entries: &[Entry]) -> Result<(), String> {
+    let profiles = entries
+        .iter()
+        .map(|entry| ListedProfile {
+            id: entry.id.clone(),
+            label: entry.label.clone(),
+            email: entry.email.clone(),
+            plan: entry.plan.clone(),
+            is_current: entry.is_current,
+            is_saved: entry.is_saved,
+            is_api_key: entry.is_api_key,
+            error: entry.error_summary.clone(),
+        })
+        .collect();
+    let json = serde_json::to_string_pretty(&ListedProfiles { profiles })
+        .map_err(|err| crate::msg1(PROFILE_ERR_SERIALIZE_INDEX, err))?;
+    println!("{json}");
+    Ok(())
 }
 
 fn handle_inquire_result<T>(
@@ -2169,6 +2265,12 @@ mod tests {
     #[test]
     fn render_helpers() {
         let entry = Entry {
+            id: Some("alpha@example.com-team".to_string()),
+            label: Some("alpha".to_string()),
+            email: Some("alpha@example.com".to_string()),
+            plan: Some("team".to_string()),
+            is_api_key: false,
+            is_saved: true,
             display: "Display".to_string(),
             details: vec!["detail".to_string()],
             error_summary: None,
@@ -2180,6 +2282,7 @@ mod tests {
             now: chrono::Local::now(),
             show_usage: false,
             show_current_marker: false,
+            show_id: true,
             use_color: false,
             profiles_dir: PathBuf::new(),
             auth_path: PathBuf::new(),
@@ -2193,6 +2296,12 @@ mod tests {
     fn render_entries_status_all_has_extra_gap_between_profiles() {
         let entries = vec![
             Entry {
+                id: Some("one".to_string()),
+                label: None,
+                email: Some("one@example.com".to_string()),
+                plan: Some("team".to_string()),
+                is_api_key: false,
+                is_saved: true,
                 display: "One".to_string(),
                 details: vec!["5 hour: 10% left".to_string()],
                 error_summary: None,
@@ -2200,6 +2309,12 @@ mod tests {
                 is_current: false,
             },
             Entry {
+                id: Some("two".to_string()),
+                label: None,
+                email: Some("two@example.com".to_string()),
+                plan: Some("team".to_string()),
+                is_api_key: false,
+                is_saved: true,
                 display: "Two".to_string(),
                 details: vec!["5 hour: 20% left".to_string()],
                 error_summary: None,
@@ -2212,6 +2327,7 @@ mod tests {
             now: chrono::Local::now(),
             show_usage: true,
             show_current_marker: false,
+            show_id: false,
             use_color: false,
             profiles_dir: PathBuf::new(),
             auth_path: PathBuf::new(),
@@ -2254,7 +2370,7 @@ mod tests {
         write_auth(&paths.auth, "acct", "a@b.com", "pro", "acc", "ref");
         crate::ensure_paths(&paths).unwrap();
         save_profile(&paths, Some("team".to_string())).unwrap();
-        list_profiles(&paths).unwrap();
+        list_profiles(&paths, false, false).unwrap();
         status_profiles(&paths, false, false).unwrap();
         status_profiles(&paths, true, false).unwrap();
     }
