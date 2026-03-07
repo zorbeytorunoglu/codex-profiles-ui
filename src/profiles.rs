@@ -333,15 +333,23 @@ pub fn list_profiles(paths: &Paths, json: bool, show_id: bool) -> Result<(), Str
     Ok(())
 }
 
-pub fn status_profiles(paths: &Paths, all: bool, show_errors: bool) -> Result<(), String> {
+pub fn status_profiles(
+    paths: &Paths,
+    all: bool,
+    json: bool,
+    show_errors: bool,
+) -> Result<(), String> {
     if all {
-        return status_all_profiles(paths, show_errors);
+        return status_all_profiles(paths, json, show_errors);
     }
     let snapshot = load_snapshot(paths, false).ok();
     let current_saved_id = snapshot
         .as_ref()
         .and_then(|snap| current_saved_id(paths, &snap.tokens));
-    let ctx = ListCtx::new(paths, true, false, false);
+    let mut ctx = ListCtx::new(paths, true, false, false);
+    if json {
+        ctx.use_color = false;
+    }
     let empty_labels = Labels::new();
     let labels = snapshot
         .as_ref()
@@ -353,6 +361,9 @@ pub fn status_profiles(paths: &Paths, all: bool, show_errors: bool) -> Result<()
         .map(|snap| &snap.tokens)
         .unwrap_or(&empty_tokens);
     let current_entry = make_current(paths, current_saved_id.as_deref(), labels, tokens_map, &ctx);
+    if json {
+        return print_current_status_json(current_entry);
+    }
     if let Some(entry) = current_entry {
         let lines = render_entries(&[entry], &ctx, false);
         print_output_block(&lines.join("\n"));
@@ -363,10 +374,13 @@ pub fn status_profiles(paths: &Paths, all: bool, show_errors: bool) -> Result<()
     Ok(())
 }
 
-fn status_all_profiles(paths: &Paths, show_errors: bool) -> Result<(), String> {
+fn status_all_profiles(paths: &Paths, json: bool, show_errors: bool) -> Result<(), String> {
     let snapshot = load_snapshot(paths, false)?;
     let current_saved_id = current_saved_id(paths, &snapshot.tokens);
-    let ctx = ListCtx::new(paths, true, true, false);
+    let mut ctx = ListCtx::new(paths, true, true, false);
+    if json {
+        ctx.use_color = false;
+    }
 
     let ordered = ordered_profile_ids(&snapshot, current_saved_id.as_deref());
     let filtered: Vec<String> = ordered
@@ -420,6 +434,15 @@ fn status_all_profiles(paths: &Paths, show_errors: bool) -> Result<(), String> {
         } else {
             current_visible = Some(entry);
         }
+    }
+
+    if json {
+        let mut profiles = Vec::new();
+        if let Some(entry) = current_visible {
+            profiles.push(entry);
+        }
+        profiles.extend(list_entries);
+        return print_all_status_json(profiles, hidden_api_count, hidden_error_count);
     }
 
     if current_visible.is_none()
@@ -1938,6 +1961,27 @@ struct ListedProfiles {
     profiles: Vec<ListedProfile>,
 }
 
+#[derive(Serialize)]
+struct StatusProfileJson {
+    id: Option<String>,
+    label: Option<String>,
+    email: Option<String>,
+    plan: Option<String>,
+    is_current: bool,
+    is_saved: bool,
+    is_api_key: bool,
+    display: String,
+    details: Vec<String>,
+    error: Option<String>,
+}
+
+#[derive(Serialize)]
+struct AllStatusJson {
+    profiles: Vec<StatusProfileJson>,
+    hidden_api_profiles: usize,
+    hidden_error_profiles: usize,
+}
+
 fn print_list_json(entries: &[Entry]) -> Result<(), String> {
     let profiles = entries
         .iter()
@@ -1953,6 +1997,81 @@ fn print_list_json(entries: &[Entry]) -> Result<(), String> {
         })
         .collect();
     let json = serde_json::to_string_pretty(&ListedProfiles { profiles })
+        .map_err(|err| crate::msg1(PROFILE_ERR_SERIALIZE_INDEX, err))?;
+    println!("{json}");
+    Ok(())
+}
+
+fn strip_ansi_sequences(input: &str) -> String {
+    if !input.contains('\u{1b}') {
+        return input.to_string();
+    }
+
+    let mut out = String::with_capacity(input.len());
+    let bytes = input.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == 0x1b {
+            i += 1;
+            if i < bytes.len() && bytes[i] == b'[' {
+                i += 1;
+                while i < bytes.len() {
+                    let b = bytes[i];
+                    i += 1;
+                    if (0x40..=0x7e).contains(&b) {
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+        let ch = input[i..].chars().next().expect("valid utf-8 char");
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
+}
+
+fn status_profile_json(entry: Entry) -> StatusProfileJson {
+    StatusProfileJson {
+        id: entry.id,
+        label: entry.label,
+        email: entry.email,
+        plan: entry.plan,
+        is_current: entry.is_current,
+        is_saved: entry.is_saved,
+        is_api_key: entry.is_api_key,
+        display: strip_ansi_sequences(&entry.display),
+        details: entry
+            .details
+            .into_iter()
+            .map(|detail| strip_ansi_sequences(&detail))
+            .collect(),
+        error: entry
+            .error_summary
+            .map(|error| strip_ansi_sequences(&error)),
+    }
+}
+
+fn print_current_status_json(current: Option<Entry>) -> Result<(), String> {
+    let payload = current.map(status_profile_json);
+    let json = serde_json::to_string_pretty(&payload)
+        .map_err(|err| crate::msg1(PROFILE_ERR_SERIALIZE_INDEX, err))?;
+    println!("{json}");
+    Ok(())
+}
+
+fn print_all_status_json(
+    profiles: Vec<Entry>,
+    hidden_api_profiles: usize,
+    hidden_error_profiles: usize,
+) -> Result<(), String> {
+    let payload = AllStatusJson {
+        profiles: profiles.into_iter().map(status_profile_json).collect(),
+        hidden_api_profiles,
+        hidden_error_profiles,
+    };
+    let json = serde_json::to_string_pretty(&payload)
         .map_err(|err| crate::msg1(PROFILE_ERR_SERIALIZE_INDEX, err))?;
     println!("{json}");
     Ok(())
@@ -2455,6 +2574,11 @@ mod tests {
     }
 
     #[test]
+    fn strip_ansi_sequences_removes_color_codes() {
+        assert_eq!(strip_ansi_sequences("\u{1b}[31mtext\u{1b}[0m"), "text");
+    }
+
+    #[test]
     fn handle_inquire_result_variants() {
         let ok: Result<i32, inquire::error::InquireError> = Ok(1);
         assert_eq!(handle_inquire_result(ok, "selection").unwrap(), 1);
@@ -2487,8 +2611,8 @@ mod tests {
         crate::ensure_paths(&paths).unwrap();
         save_profile(&paths, Some("team".to_string())).unwrap();
         list_profiles(&paths, false, false).unwrap();
-        status_profiles(&paths, false, false).unwrap();
-        status_profiles(&paths, true, false).unwrap();
+        status_profiles(&paths, false, false, false).unwrap();
+        status_profiles(&paths, true, false, false).unwrap();
     }
 
     #[test]

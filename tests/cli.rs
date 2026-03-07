@@ -1081,6 +1081,53 @@ fn ui_status_command() {
 }
 
 #[test]
+fn ui_status_json_command() {
+    let env = TestEnv::new();
+    seed_profiles(&env);
+    seed_alpha(&env);
+    let usage_body = r#"{"rate_limit":{"primary_window":{"used_percent":20,"limit_window_seconds":18000,"reset_at":2000000000}}}"#;
+    let (usage_addr, usage_handle) = start_usage_server(usage_body, 6).expect("usage server");
+    env.write_config(&format!("http://{usage_addr}/backend-api"));
+
+    let output = env.run(&["status", "--json"]);
+    let profile: serde_json::Value = serde_json::from_str(&output).expect("parse status json");
+    assert_eq!(profile.get("id").unwrap(), &serde_json::json!(ALPHA_ID));
+    assert_eq!(profile.get("label").unwrap(), &serde_json::json!("alpha"));
+    assert_eq!(
+        profile.get("email").unwrap(),
+        &serde_json::json!(ALPHA_EMAIL)
+    );
+    assert_eq!(profile.get("is_current").unwrap(), &serde_json::json!(true));
+    assert_eq!(profile.get("is_saved").unwrap(), &serde_json::json!(true));
+    assert!(profile.get("details").unwrap().as_array().is_some());
+
+    let _ = usage_handle.join();
+}
+
+#[test]
+fn ui_status_json_empty_profile() {
+    let env = TestEnv::new();
+    let output = env.run(&["status", "--json"]);
+    let json: serde_json::Value = serde_json::from_str(&output).expect("parse status json");
+    assert_eq!(json, serde_json::Value::Null);
+}
+
+#[test]
+fn ui_status_json_unsaved_current_profile() {
+    let env = TestEnv::new();
+    seed_current(&env);
+    let output = env.run(&["status", "--json"]);
+    let profile: serde_json::Value = serde_json::from_str(&output).expect("parse status json");
+    assert_eq!(profile.get("id").unwrap(), &serde_json::Value::Null);
+    assert_eq!(
+        profile.get("email").unwrap(),
+        &serde_json::json!("current@example.com")
+    );
+    assert_eq!(profile.get("is_current").unwrap(), &serde_json::json!(true));
+    assert_eq!(profile.get("is_saved").unwrap(), &serde_json::json!(false));
+}
+
+#[test]
 fn ui_status_rejects_label_flag() {
     let env = TestEnv::new();
     seed_profiles(&env);
@@ -1107,6 +1154,160 @@ fn ui_status_all_command() {
     let output = env.run(&["status", "--all", "--show-errors"]);
     assert!(output.contains("<- current profile"));
     assert_order(&output, "alpha@example.com", "beta@example.com");
+}
+
+#[test]
+fn ui_status_all_json_command() {
+    let env = TestEnv::new();
+    seed_profiles(&env);
+    env.write_profiles_index(
+        &[(ALPHA_ID, 200), (BETA_ID, 100)],
+        &[(ALPHA_ID, "alpha"), (BETA_ID, "beta")],
+        None,
+    );
+    seed_alpha(&env);
+    let usage_body = r#"{"rate_limit":{"primary_window":{"used_percent":20,"limit_window_seconds":18000,"reset_at":2000000000}}}"#;
+    let (usage_addr, usage_handle) = start_usage_server(usage_body, 6).expect("usage server");
+    env.write_config(&format!("http://{usage_addr}/backend-api"));
+
+    let output = env.run(&["status", "--all", "--json"]);
+    let json: serde_json::Value = serde_json::from_str(&output).expect("parse status all json");
+    let profiles = json
+        .get("profiles")
+        .and_then(|value| value.as_array())
+        .expect("profiles array");
+    assert_eq!(profiles.len(), 2);
+    assert_eq!(profiles[0].get("id").unwrap(), &serde_json::json!(ALPHA_ID));
+    assert_eq!(profiles[1].get("id").unwrap(), &serde_json::json!(BETA_ID));
+    assert_eq!(
+        json.get("hidden_api_profiles").unwrap(),
+        &serde_json::json!(0)
+    );
+    assert_eq!(
+        json.get("hidden_error_profiles").unwrap(),
+        &serde_json::json!(0)
+    );
+
+    let _ = usage_handle.join();
+}
+
+#[test]
+fn ui_status_all_json_hides_api_profiles_by_default() {
+    let env = TestEnv::new();
+    seed_profiles(&env);
+    seed_alpha(&env);
+    seed_api_profile(&env, "api-key-hidden", "api-key-sk-proj-hidden1234567890");
+    env.write_profiles_index(
+        &[(ALPHA_ID, 300), (BETA_ID, 200), ("api-key-hidden", 100)],
+        &[(ALPHA_ID, "alpha"), (BETA_ID, "beta")],
+        None,
+    );
+    let usage_body = r#"{"rate_limit":{"primary_window":{"used_percent":20,"limit_window_seconds":18000,"reset_at":2000000000}}}"#;
+    let (usage_addr, usage_handle) = start_usage_server(usage_body, 6).expect("usage server");
+    env.write_config(&format!("http://{usage_addr}/backend-api"));
+
+    let output = env.run(&["status", "--all", "--json"]);
+    let json: serde_json::Value = serde_json::from_str(&output).expect("parse status all json");
+    let profiles = json
+        .get("profiles")
+        .and_then(|value| value.as_array())
+        .expect("profiles array");
+    assert_eq!(profiles.len(), 2);
+    assert_eq!(
+        json.get("hidden_api_profiles").unwrap(),
+        &serde_json::json!(1)
+    );
+
+    let _ = usage_handle.join();
+}
+
+#[test]
+fn ui_status_all_json_empty_profiles() {
+    let env = TestEnv::new();
+    let output = env.run(&["status", "--all", "--json"]);
+    let json: serde_json::Value = serde_json::from_str(&output).expect("parse status all json");
+    assert_eq!(
+        json,
+        serde_json::json!({
+            "profiles": [],
+            "hidden_api_profiles": 0,
+            "hidden_error_profiles": 0
+        })
+    );
+}
+
+#[test]
+fn ui_status_all_json_hides_errored_profiles_by_default() {
+    let env = TestEnv::new();
+    seed_profiles(&env);
+    seed_alpha(&env);
+    seed_errored_profile(&env, "gamma@example.com-team");
+    env.write_profiles_index(
+        &[
+            (ALPHA_ID, 300),
+            (BETA_ID, 200),
+            ("gamma@example.com-team", 100),
+        ],
+        &[(ALPHA_ID, "alpha"), (BETA_ID, "beta")],
+        None,
+    );
+    let usage_body = r#"{"rate_limit":{"primary_window":{"used_percent":20,"limit_window_seconds":18000,"reset_at":2000000000}}}"#;
+    let (usage_addr, usage_handle) = start_usage_server(usage_body, 6).expect("usage server");
+    env.write_config(&format!("http://{usage_addr}/backend-api"));
+
+    let output = env.run(&["status", "--all", "--json"]);
+    let json: serde_json::Value = serde_json::from_str(&output).expect("parse status all json");
+    let profiles = json
+        .get("profiles")
+        .and_then(|value| value.as_array())
+        .expect("profiles array");
+    assert_eq!(profiles.len(), 2);
+    assert_eq!(
+        json.get("hidden_error_profiles").unwrap(),
+        &serde_json::json!(1)
+    );
+
+    let _ = usage_handle.join();
+}
+
+#[test]
+fn ui_status_all_json_show_errors_includes_errored_profiles() {
+    let env = TestEnv::new();
+    seed_profiles(&env);
+    seed_alpha(&env);
+    seed_errored_profile(&env, "gamma@example.com-team");
+    env.write_profiles_index(
+        &[
+            (ALPHA_ID, 300),
+            (BETA_ID, 200),
+            ("gamma@example.com-team", 100),
+        ],
+        &[(ALPHA_ID, "alpha"), (BETA_ID, "beta")],
+        None,
+    );
+    let usage_body = r#"{"rate_limit":{"primary_window":{"used_percent":20,"limit_window_seconds":18000,"reset_at":2000000000}}}"#;
+    let (usage_addr, usage_handle) = start_usage_server(usage_body, 6).expect("usage server");
+    env.write_config(&format!("http://{usage_addr}/backend-api"));
+
+    let output = env.run(&["status", "--all", "--show-errors", "--json"]);
+    let json: serde_json::Value = serde_json::from_str(&output).expect("parse status all json");
+    let profiles = json
+        .get("profiles")
+        .and_then(|value| value.as_array())
+        .expect("profiles array");
+    assert_eq!(profiles.len(), 3);
+    assert_eq!(
+        json.get("hidden_error_profiles").unwrap(),
+        &serde_json::json!(0)
+    );
+    assert!(
+        profiles
+            .iter()
+            .any(|profile| profile.get("error").is_some()
+                && !profile.get("error").unwrap().is_null())
+    );
+
+    let _ = usage_handle.join();
 }
 
 #[test]
@@ -1305,6 +1506,47 @@ fn ui_status_all_hides_current_api_profile() {
     assert!(output.contains("beta@example.com"));
     assert!(!output.contains("Usage unavailable for API key"));
     assert!(output.contains("+ 2 API profiles hidden"));
+    let _ = usage_handle.join();
+}
+
+#[test]
+fn ui_status_all_json_hides_current_api_profile() {
+    let env = TestEnv::new();
+    seed_profiles(&env);
+    seed_api_profile(&env, "api-key-current", "api-key-sk-proj-current1234567890");
+    seed_api_profile(&env, "api-key-hidden", "api-key-sk-proj-hidden1234567890");
+    env.write_profiles_index(
+        &[
+            (ALPHA_ID, 300),
+            (BETA_ID, 200),
+            ("api-key-current", 150),
+            ("api-key-hidden", 100),
+        ],
+        &[(ALPHA_ID, "alpha"), (BETA_ID, "beta")],
+        None,
+    );
+    write_auth_tokens(
+        &env,
+        serde_json::json!({
+            "account_id": "api-key-sk-proj-current1234567890",
+        }),
+    );
+    let usage_body = r#"{"rate_limit":{"primary_window":{"used_percent":20,"limit_window_seconds":18000,"reset_at":2000000000}}}"#;
+    let (usage_addr, usage_handle) = start_usage_server(usage_body, 6).expect("usage server");
+    env.write_config(&format!("http://{usage_addr}/backend-api"));
+
+    let output = env.run(&["status", "--all", "--json"]);
+    let json: serde_json::Value = serde_json::from_str(&output).expect("parse status all json");
+    let profiles = json
+        .get("profiles")
+        .and_then(|value| value.as_array())
+        .expect("profiles array");
+    assert_eq!(profiles.len(), 2);
+    assert_eq!(
+        json.get("hidden_api_profiles").unwrap(),
+        &serde_json::json!(2)
+    );
+
     let _ = usage_handle.join();
 }
 

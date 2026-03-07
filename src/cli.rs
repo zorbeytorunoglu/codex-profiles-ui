@@ -51,11 +51,14 @@ pub enum Commands {
         #[command(subcommand)]
         command: LabelCommands,
     },
-    /// Show usage details for the current profile
+    /// Show usage details for the current or saved profiles
     Status {
         /// Show usage for all saved profiles
         #[arg(long)]
         all: bool,
+        /// Print machine-readable JSON output
+        #[arg(long)]
+        json: bool,
         /// Include errored profiles in --all output
         #[arg(long, requires = "all")]
         show_errors: bool,
@@ -115,6 +118,6 @@ pub fn command_with_examples() -> Command {
 
 fn examples_root(name: &str) -> String {
     format!(
-        "Examples:\n  {name} save --label work\n  {name} load --label work\n  {name} load --id mail@example.com-team --force\n  {name} list\n  {name} list --json\n  {name} doctor\n  {name} label set --id mail@example.com-team --to work\n  {name} label clear --label work\n  {name} status\n  {name} delete --label work\n  {name} delete --id mail@example.com-team --yes"
+        "Examples:\n  {name} save --label work\n  {name} load --label work\n  {name} load --id mail@example.com-team --force\n  {name} list\n  {name} list --json\n  {name} doctor\n  {name} label set --id mail@example.com-team --to work\n  {name} label clear --label work\n  {name} status\n  {name} status --json\n  {name} status --all --json\n  {name} delete --label work\n  {name} delete --id mail@example.com-team --yes"
     )
 }

@@ -83,7 +83,11 @@ fn run(cli: Cli) -> Result<(), String> {
                 clear_profile_label(&paths, label, id)
             }
         },
-        Commands::Status { all, show_errors } => status_profiles(&paths, all, show_errors),
+        Commands::Status {
+            all,
+            json,
+            show_errors,
+        } => status_profiles(&paths, all, json, show_errors),
         Commands::Delete { yes, label, id } => delete_profile(&paths, yes, label, id),
     }
 }

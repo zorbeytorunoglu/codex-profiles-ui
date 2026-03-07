@@ -99,10 +99,12 @@ rm ~/.local/bin/codex-profiles
 | `codex-profiles doctor` | Run local diagnostics for auth, profile storage, and install state. |
 | `codex-profiles label set [options]` | Add or replace a label on a saved profile. |
 | `codex-profiles label clear [options]` | Remove a label from a saved profile. |
-| `codex-profiles status [options]` | Show usage for the current profile, or all saved profiles with `--all`. |
+| `codex-profiles status [options]` | Show usage for the current profile, or all saved profiles with `--all`. Use `--json` for structured output. |
 | `codex-profiles delete [options]` | Delete profiles. Use `--label <name>`, repeat `--id <profile-id>`, and `--yes` as needed. |
 
 Label examples: `codex-profiles label set --id <profile-id> --to work`, `codex-profiles label clear --label work`.
+
+`status --json` returns the current profile object (or `null`); `status --all --json` returns `profiles` plus hidden-profile counts.
 
 > [!WARNING]
 > Deleting a profile does not log you out. It only removes the saved profile file.
