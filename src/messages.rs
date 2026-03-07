@@ -87,6 +87,8 @@ pub const PROFILE_ERR_PROMPT_LOAD: &str = "Error: Could not prompt for load: {}"
 pub const PROFILE_ERR_TTY_REQUIRED: &str =
     "Error: {} selection requires a TTY. Run `{} {}` interactively.";
 pub const PROFILE_ERR_LABEL_NO_MATCH: &str = "Error: Label '{}' does not match a saved profile. {}";
+pub const PROFILE_ERR_ID_NO_MATCH: &str =
+    "Error: Profile id '{}' does not match a saved profile. {}";
 pub const PROFILE_ERR_DELETE_CONFIRM_REQUIRED: &str =
     "Error: Deletion requires confirmation. Re-run with `--yes` to skip the prompt.";
 pub const PROFILE_ERR_PROMPT_DELETE: &str = "Error: Could not prompt for delete: {}";

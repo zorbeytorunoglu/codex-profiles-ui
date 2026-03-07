@@ -525,6 +525,17 @@ fn ui_load_command() {
 }
 
 #[test]
+fn ui_load_by_id_command() {
+    let env = TestEnv::new();
+    seed_profiles(&env);
+    seed_alpha(&env);
+    let output = env.run(&["load", "--id", BETA_ID]);
+    assert!(output.contains("Loaded profile"));
+    assert!(output.contains("beta@example.com"));
+    assert!(env.read_auth().contains(BETA_ACCOUNT));
+}
+
+#[test]
 fn ui_load_current_profile_marks_current() {
     let env = TestEnv::new();
     seed_profiles(&env);
@@ -539,6 +550,22 @@ fn ui_load_label_not_found() {
     seed_profiles(&env);
     let err = env.run_expect_error(&["load", "--label", "missing"]);
     assert!(err.contains("Label 'missing' was not found"));
+}
+
+#[test]
+fn ui_load_id_not_found() {
+    let env = TestEnv::new();
+    seed_profiles(&env);
+    let err = env.run_expect_error(&["load", "--id", "missing-id"]);
+    assert!(err.contains("Profile id 'missing-id'"));
+}
+
+#[test]
+fn ui_load_rejects_label_with_id() {
+    let env = TestEnv::new();
+    let err = env.run_expect_error(&["load", "--label", "alpha", "--id", ALPHA_ID]);
+    assert!(err.contains("--label"));
+    assert!(err.contains("--id"));
 }
 
 #[test]
@@ -588,6 +615,31 @@ fn ui_delete_command() {
 }
 
 #[test]
+fn ui_delete_by_id_command() {
+    let env = TestEnv::new();
+    seed_profiles(&env);
+    let output = env.run(&["delete", "--id", BETA_ID, "--yes"]);
+    assert!(output.contains("Deleted profile"));
+    assert!(output.contains("beta@example.com"));
+    let profile_path = env.profiles_dir().join(format!("{BETA_ID}.json"));
+    assert!(!profile_path.is_file());
+}
+
+#[test]
+fn ui_delete_multiple_ids_command() {
+    let env = TestEnv::new();
+    seed_profiles(&env);
+    let output = env.run(&["delete", "--id", BETA_ID, "--id", ALPHA_ID, "--yes"]);
+    assert!(output.contains("Deleted 2 profiles"));
+    assert!(
+        !env.profiles_dir()
+            .join(format!("{ALPHA_ID}.json"))
+            .is_file()
+    );
+    assert!(!env.profiles_dir().join(format!("{BETA_ID}.json")).is_file());
+}
+
+#[test]
 fn ui_delete_current_profile_marks_current() {
     let env = TestEnv::new();
     seed_profiles(&env);
@@ -610,6 +662,22 @@ fn ui_delete_requires_confirmation() {
     seed_profiles(&env);
     let err = env.run_expect_error(&["delete", "--label", "beta"]);
     assert!(err.contains("Deletion requires confirmation"));
+}
+
+#[test]
+fn ui_delete_id_not_found() {
+    let env = TestEnv::new();
+    seed_profiles(&env);
+    let err = env.run_expect_error(&["delete", "--id", "missing-id", "--yes"]);
+    assert!(err.contains("Profile id 'missing-id'"));
+}
+
+#[test]
+fn ui_delete_rejects_label_with_id() {
+    let env = TestEnv::new();
+    let err = env.run_expect_error(&["delete", "--label", "alpha", "--id", ALPHA_ID]);
+    assert!(err.contains("--label"));
+    assert!(err.contains("--id"));
 }
 
 #[test]

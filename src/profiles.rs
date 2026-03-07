@@ -14,11 +14,11 @@ use crate::{
     AUTH_ERR_INCOMPLETE_ACCOUNT, AUTH_ERR_PROFILE_MISSING_ACCOUNT,
     AUTH_ERR_PROFILE_MISSING_EMAIL_PLAN, PROFILE_COPY_CONTEXT_LOAD, PROFILE_COPY_CONTEXT_SAVE,
     PROFILE_DELETE_HELP, PROFILE_ERR_COPY_CONTEXT, PROFILE_ERR_CURRENT_NOT_SAVED,
-    PROFILE_ERR_DELETE_CONFIRM_REQUIRED, PROFILE_ERR_FAILED_DELETE, PROFILE_ERR_ID_NOT_FOUND,
-    PROFILE_ERR_INDEX_INVALID_JSON, PROFILE_ERR_LABEL_EMPTY, PROFILE_ERR_LABEL_EXISTS,
-    PROFILE_ERR_LABEL_NO_MATCH, PROFILE_ERR_LABEL_NOT_FOUND, PROFILE_ERR_PROMPT_CONTEXT,
-    PROFILE_ERR_PROMPT_DELETE, PROFILE_ERR_PROMPT_LOAD, PROFILE_ERR_READ_INDEX,
-    PROFILE_ERR_READ_PROFILES_DIR, PROFILE_ERR_REFRESHED_ACCESS_MISSING,
+    PROFILE_ERR_DELETE_CONFIRM_REQUIRED, PROFILE_ERR_FAILED_DELETE, PROFILE_ERR_ID_NO_MATCH,
+    PROFILE_ERR_ID_NOT_FOUND, PROFILE_ERR_INDEX_INVALID_JSON, PROFILE_ERR_LABEL_EMPTY,
+    PROFILE_ERR_LABEL_EXISTS, PROFILE_ERR_LABEL_NO_MATCH, PROFILE_ERR_LABEL_NOT_FOUND,
+    PROFILE_ERR_PROMPT_CONTEXT, PROFILE_ERR_PROMPT_DELETE, PROFILE_ERR_PROMPT_LOAD,
+    PROFILE_ERR_READ_INDEX, PROFILE_ERR_READ_PROFILES_DIR, PROFILE_ERR_REFRESHED_ACCESS_MISSING,
     PROFILE_ERR_REMOVE_INVALID, PROFILE_ERR_RENAME_PROFILE, PROFILE_ERR_SELECTED_INVALID,
     PROFILE_ERR_SERIALIZE_INDEX, PROFILE_ERR_SYNC_CURRENT, PROFILE_ERR_TTY_REQUIRED,
     PROFILE_ERR_WRITE_INDEX, PROFILE_LOAD_HELP, PROFILE_MSG_DELETED_COUNT,
@@ -87,7 +87,11 @@ pub fn save_profile(paths: &Paths, label: Option<String>) -> Result<(), String> 
     Ok(())
 }
 
-pub fn load_profile(paths: &Paths, label: Option<String>) -> Result<(), String> {
+pub fn load_profile(
+    paths: &Paths,
+    label: Option<String>,
+    id: Option<String>,
+) -> Result<(), String> {
     let use_color_err = use_color_stderr();
     let use_color_out = use_color_stdout();
     let no_profiles = format_no_profiles(paths, use_color_err);
@@ -110,7 +114,13 @@ pub fn load_profile(paths: &Paths, label: Option<String>) -> Result<(), String> 
     }
 
     let candidates = make_candidates(paths, &snapshot, &ordered);
-    let selected = pick_one("load", label.as_deref(), &snapshot, &candidates)?;
+    let selected = pick_one(
+        "load",
+        label.as_deref(),
+        id.as_deref(),
+        &snapshot,
+        &candidates,
+    )?;
     let selected_id = selected.id.clone();
     let selected_display = selected.display.clone();
 
@@ -157,7 +167,12 @@ pub fn load_profile(paths: &Paths, label: Option<String>) -> Result<(), String> 
     Ok(())
 }
 
-pub fn delete_profile(paths: &Paths, yes: bool, label: Option<String>) -> Result<(), String> {
+pub fn delete_profile(
+    paths: &Paths,
+    yes: bool,
+    label: Option<String>,
+    ids: Vec<String>,
+) -> Result<(), String> {
     let use_color_out = use_color_stdout();
     let use_color_err = use_color_stderr();
     let no_profiles = format_no_profiles(paths, use_color_out);
@@ -173,7 +188,7 @@ pub fn delete_profile(paths: &Paths, yes: bool, label: Option<String>) -> Result
     };
 
     let candidates = make_candidates(paths, &snapshot, &ordered);
-    let selections = pick_many("delete", label.as_deref(), &snapshot, &candidates)?;
+    let selections = pick_many("delete", label.as_deref(), &ids, &snapshot, &candidates)?;
     let (selected_ids, displays): (Vec<String>, Vec<String>) = selections
         .iter()
         .map(|item| (item.id.clone(), item.display.clone()))
@@ -1092,11 +1107,14 @@ fn make_candidates(paths: &Paths, snapshot: &Snapshot, ordered: &[String]) -> Ve
 fn pick_one(
     action: &str,
     label: Option<&str>,
+    id: Option<&str>,
     snapshot: &Snapshot,
     candidates: &[Candidate],
 ) -> Result<Candidate, String> {
     if let Some(label) = label {
         select_by_label(label, &snapshot.labels, candidates)
+    } else if let Some(id) = id {
+        select_by_id(id, candidates)
     } else {
         require_tty(action)?;
         select_single_profile("", candidates)
@@ -1106,11 +1124,14 @@ fn pick_one(
 fn pick_many(
     action: &str,
     label: Option<&str>,
+    ids: &[String],
     snapshot: &Snapshot,
     candidates: &[Candidate],
 ) -> Result<Vec<Candidate>, String> {
     if let Some(label) = label {
         Ok(vec![select_by_label(label, &snapshot.labels, candidates)?])
+    } else if !ids.is_empty() {
+        select_many_by_id(ids, candidates)
     } else {
         require_tty(action)?;
         select_multiple_profiles("", candidates)
@@ -1299,6 +1320,29 @@ pub(crate) fn select_by_label(
         ));
     };
     Ok(candidate.clone())
+}
+
+pub(crate) fn select_by_id(id: &str, candidates: &[Candidate]) -> Result<Candidate, String> {
+    let Some(candidate) = candidates.iter().find(|candidate| candidate.id == id) else {
+        return Err(crate::msg2(
+            PROFILE_ERR_ID_NO_MATCH,
+            id,
+            format_list_hint(use_color_stderr()),
+        ));
+    };
+    Ok(candidate.clone())
+}
+
+fn select_many_by_id(ids: &[String], candidates: &[Candidate]) -> Result<Vec<Candidate>, String> {
+    let mut selections = Vec::with_capacity(ids.len());
+    let mut seen = HashSet::new();
+    for id in ids {
+        if !seen.insert(id.clone()) {
+            continue;
+        }
+        selections.push(select_by_id(id, candidates)?);
+    }
+    Ok(selections)
 }
 
 pub(crate) fn confirm_delete_profiles(displays: &[String]) -> Result<bool, String> {
@@ -2383,7 +2427,7 @@ mod tests {
         write_auth(&paths.auth, "acct", "a@b.com", "pro", "acc", "ref");
         crate::ensure_paths(&paths).unwrap();
         save_profile(&paths, Some("team".to_string())).unwrap();
-        delete_profile(&paths, true, Some("team".to_string())).unwrap();
+        delete_profile(&paths, true, Some("team".to_string()), vec![]).unwrap();
     }
 
     #[test]

@@ -88,15 +88,15 @@ rm ~/.local/bin/codex-profiles
 ## Usage
 
 > [!TIP]
-> `load` and `delete` are interactive unless you pass `--label`.
+> `load` and `delete` are interactive unless you pass `--label` or `--id`.
 
 | Command | Description |
 | --- | --- |
 | `codex-profiles save [--label <name>]` | Save the current `auth.json` as a profile, optionally labeled. |
-| `codex-profiles load [--label <name>]` | Load a profile from the picker without re-login (or by label). |
+| `codex-profiles load [--label <name> | --id <profile-id>]` | Load a profile without re-login. |
 | `codex-profiles list [--show-id | --json]` | List saved profiles with optional ids or JSON output. |
 | `codex-profiles status [--all] [--show-errors]` | Show usage for the current profile, or all saved profiles (`--all`). |
-| `codex-profiles delete [--yes] [--label <name>]` | Delete profiles from the picker (or by label). |
+| `codex-profiles delete [--yes] [--label <name> | --id <profile-id>]...` | Delete profiles by interactive selection or exact selector. |
 
 > [!WARNING]
 > Deleting a profile does not log you out. It only removes the saved profile file.

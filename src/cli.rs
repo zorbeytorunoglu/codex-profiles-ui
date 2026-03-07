@@ -1,4 +1,4 @@
-use clap::{Command, CommandFactory, Parser, Subcommand};
+use clap::{ArgAction, Command, CommandFactory, Parser, Subcommand};
 
 use crate::command_name;
 
@@ -21,12 +21,16 @@ pub enum Commands {
         #[arg(long)]
         label: Option<String>,
     },
-    /// Load a profile from the interactive list
+    /// Load a saved profile
     Load {
         /// Load the profile matching this label
         #[arg(value_name = "label")]
-        #[arg(long)]
+        #[arg(long, conflicts_with = "id")]
         label: Option<String>,
+        /// Load the profile matching this exact id
+        #[arg(value_name = "profile-id")]
+        #[arg(long, conflicts_with = "label")]
+        id: Option<String>,
     },
     /// List saved profiles
     List {
@@ -46,15 +50,19 @@ pub enum Commands {
         #[arg(long, requires = "all")]
         show_errors: bool,
     },
-    /// Delete saved profiles from the interactive list
+    /// Delete saved profiles
     Delete {
         /// Skip delete confirmation
         #[arg(long)]
         yes: bool,
         /// Delete the profile matching this label
         #[arg(value_name = "label")]
-        #[arg(long)]
+        #[arg(long, conflicts_with = "id")]
         label: Option<String>,
+        /// Delete the profile matching this exact id
+        #[arg(value_name = "profile-id")]
+        #[arg(long, conflicts_with = "label", action = ArgAction::Append)]
+        id: Vec<String>,
     },
 }
 
@@ -68,6 +76,6 @@ pub fn command_with_examples() -> Command {
 
 fn examples_root(name: &str) -> String {
     format!(
-        "Examples:\n  {name} save --label work\n  {name} load --label work\n  {name} list\n  {name} list --json\n  {name} status\n  {name} delete --label work"
+        "Examples:\n  {name} save --label work\n  {name} load --label work\n  {name} load --id mail@example.com-team\n  {name} list\n  {name} list --json\n  {name} status\n  {name} delete --label work\n  {name} delete --id mail@example.com-team --yes"
     )
 }
