@@ -2,6 +2,8 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use serde::Serialize;
+
 use crate::{
     InstallSource, Paths, current_saved_id, detect_install_source, is_profile_ready, lock_usage,
     print_output_block, profile_id_from_path, read_auth_file, read_tokens,
@@ -27,7 +29,7 @@ impl Level {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Serialize)]
 struct Counts {
     ok: usize,
     warn: usize,
@@ -50,6 +52,19 @@ struct Check {
     level: Level,
     name: &'static str,
     detail: String,
+}
+
+#[derive(Serialize)]
+struct DoctorCheckJson {
+    name: &'static str,
+    level: &'static str,
+    detail: String,
+}
+
+#[derive(Serialize)]
+struct DoctorJson {
+    checks: Vec<DoctorCheckJson>,
+    summary: Counts,
 }
 
 impl Check {
@@ -78,28 +93,19 @@ struct SavedProfilesReport {
     tokens: BTreeMap<String, Result<crate::Tokens, String>>,
 }
 
-pub fn doctor(paths: &Paths) -> Result<(), String> {
-    let mut counts = Counts::default();
-    let mut lines = vec!["Doctor".to_string(), String::new()];
+pub fn doctor(paths: &Paths, json: bool) -> Result<(), String> {
+    let checks = collect_checks(paths);
+    let counts = summarize_checks(&checks);
 
-    for check in inspect_install(paths)
-        .into_iter()
-        .chain(inspect_auth(paths))
-        .chain(inspect_profiles_dir(paths))
-        .chain(inspect_profiles_index(paths))
-        .chain(inspect_profiles_lock(paths))
-    {
-        counts.add(check.level);
-        lines.push(check.render());
+    if json {
+        return print_doctor_json(checks, counts);
     }
 
-    let saved = inspect_saved_profiles(paths);
-    counts.add(saved.check.level);
-    lines.push(saved.check.render());
+    let mut lines = vec!["Doctor".to_string(), String::new()];
 
-    let current = inspect_current_profile(paths, &saved.tokens);
-    counts.add(current.level);
-    lines.push(current.render());
+    for check in checks {
+        lines.push(check.render());
+    }
 
     lines.push(String::new());
     lines.push(format!(
@@ -107,6 +113,46 @@ pub fn doctor(paths: &Paths) -> Result<(), String> {
         counts.ok, counts.warn, counts.error, counts.info
     ));
     print_output_block(&lines.join("\n"));
+    Ok(())
+}
+
+fn collect_checks(paths: &Paths) -> Vec<Check> {
+    let mut checks: Vec<Check> = inspect_install(paths)
+        .into_iter()
+        .chain(inspect_auth(paths))
+        .chain(inspect_profiles_dir(paths))
+        .chain(inspect_profiles_index(paths))
+        .chain(inspect_profiles_lock(paths))
+        .collect();
+
+    let saved = inspect_saved_profiles(paths);
+    checks.push(saved.check);
+    checks.push(inspect_current_profile(paths, &saved.tokens));
+    checks
+}
+
+fn summarize_checks(checks: &[Check]) -> Counts {
+    let mut counts = Counts::default();
+    for check in checks {
+        counts.add(check.level);
+    }
+    counts
+}
+
+fn print_doctor_json(checks: Vec<Check>, summary: Counts) -> Result<(), String> {
+    let payload = DoctorJson {
+        checks: checks
+            .into_iter()
+            .map(|check| DoctorCheckJson {
+                name: check.name,
+                level: check.level.label(),
+                detail: check.detail,
+            })
+            .collect(),
+        summary,
+    };
+    let json = serde_json::to_string_pretty(&payload).map_err(|err| err.to_string())?;
+    println!("{json}");
     Ok(())
 }
 

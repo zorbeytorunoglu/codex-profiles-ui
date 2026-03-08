@@ -51,7 +51,7 @@ fn run_cli_with_args(args: Vec<std::ffi::OsString>) -> Result<(), String> {
 
 fn run(cli: Cli) -> Result<(), String> {
     let paths = resolve_paths()?;
-    let is_doctor = matches!(&cli.command, Commands::Doctor);
+    let is_doctor = matches!(&cli.command, Commands::Doctor { .. });
     if !is_doctor {
         ensure_paths(&paths)?;
     }
@@ -74,7 +74,7 @@ fn run(cli: Cli) -> Result<(), String> {
         Commands::Save { label } => save_profile(&paths, label),
         Commands::Load { label, id, force } => load_profile(&paths, label, id, force),
         Commands::List { json, show_id } => list_profiles(&paths, json, show_id),
-        Commands::Doctor => doctor(&paths),
+        Commands::Doctor { json } => doctor(&paths, json),
         Commands::Label { command } => match command {
             crate::cli::LabelCommands::Set { label, id, to } => {
                 set_profile_label(&paths, label, id, to)

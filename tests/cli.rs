@@ -678,6 +678,49 @@ fn ui_doctor_reports_invalid_profile_file_and_index() {
 }
 
 #[test]
+fn ui_doctor_json_missing_state() {
+    let env = TestEnv::new();
+    let output = env.run(&["doctor", "--json"]);
+    let json: serde_json::Value = serde_json::from_str(&output).expect("parse doctor json");
+    let checks = json
+        .get("checks")
+        .and_then(|value| value.as_array())
+        .expect("checks array");
+    let summary = json.get("summary").expect("summary object");
+
+    assert!(checks.iter().any(|check| {
+        check.get("name") == Some(&serde_json::json!("auth file"))
+            && check.get("level") == Some(&serde_json::json!("warn"))
+    }));
+    assert!(checks.iter().any(|check| {
+        check.get("name") == Some(&serde_json::json!("current profile"))
+            && check.get("level") == Some(&serde_json::json!("info"))
+    }));
+    assert_eq!(summary.get("error").unwrap(), &serde_json::json!(0));
+}
+
+#[test]
+fn ui_doctor_json_saved_current_profile() {
+    let env = TestEnv::new();
+    seed_profiles(&env);
+    let output = env.run(&["doctor", "--json"]);
+    let json: serde_json::Value = serde_json::from_str(&output).expect("parse doctor json");
+    let checks = json
+        .get("checks")
+        .and_then(|value| value.as_array())
+        .expect("checks array");
+
+    assert!(checks.iter().any(|check| {
+        check.get("name") == Some(&serde_json::json!("saved profiles"))
+            && check.get("detail") == Some(&serde_json::json!("2 valid, 0 invalid"))
+    }));
+    assert!(checks.iter().any(|check| {
+        check.get("name") == Some(&serde_json::json!("current profile"))
+            && check.get("detail") == Some(&serde_json::json!("saved"))
+    }));
+}
+
+#[test]
 fn ui_load_command() {
     let env = TestEnv::new();
     seed_profiles(&env);

@@ -96,7 +96,7 @@ rm ~/.local/bin/codex-profiles
 | `codex-profiles save [options]` | Save the current `auth.json` as a profile. Use `--label <name>` to label it. |
 | `codex-profiles load [options]` | Load a profile without re-login. Use `--label <name>`, `--id <profile-id>`, and `--force` as needed. |
 | `codex-profiles list [options]` | List saved profiles. Use `--show-id` or `--json` for alternate output. |
-| `codex-profiles doctor` | Run local diagnostics for auth, profile storage, and install state. |
+| `codex-profiles doctor [--json]` | Run local diagnostics for auth, profile storage, and install state. |
 | `codex-profiles label set [options]` | Add or replace a label on a saved profile. |
 | `codex-profiles label clear [options]` | Remove a label from a saved profile. |
 | `codex-profiles status [options]` | Show usage for the current profile, or all saved profiles with `--all`. Use `--json` for structured output. |
