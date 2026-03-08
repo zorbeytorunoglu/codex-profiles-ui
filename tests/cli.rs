@@ -267,6 +267,15 @@ fn profile_label(env: &TestEnv, id: &str) -> Option<String> {
         .map(str::to_string)
 }
 
+fn default_profile_id(env: &TestEnv) -> Option<String> {
+    let index_path = env.profiles_dir().join("profiles.json");
+    let index = fs::read_to_string(index_path).expect("read profiles.json");
+    let json: serde_json::Value = serde_json::from_str(&index).expect("parse profiles.json");
+    json.get("default_profile_id")
+        .and_then(|value| value.as_str())
+        .map(str::to_string)
+}
+
 fn read_json_file(path: &PathBuf) -> serde_json::Value {
     let raw = fs::read_to_string(path).expect("read json file");
     serde_json::from_str(&raw).expect("parse json file")
@@ -616,6 +625,57 @@ fn ui_label_clear_label_not_found() {
     seed_profiles(&env);
     let err = env.run_expect_error(&["label", "clear", "--label", "missing"]);
     assert!(err.contains("Label 'missing' was not found"));
+}
+
+#[test]
+fn ui_label_rename_command() {
+    let env = TestEnv::new();
+    seed_profiles(&env);
+    let output = env.run(&["label", "rename", "--label", "alpha", "--to", "work"]);
+    assert!(output.contains("Renamed label 'alpha' to 'work'"));
+    assert_eq!(profile_label(&env, ALPHA_ID), Some("work".to_string()));
+}
+
+#[test]
+fn ui_default_set_show_clear_command() {
+    let env = TestEnv::new();
+    seed_profiles(&env);
+    let output = env.run(&["default", "set", "--label", "beta"]);
+    assert!(output.contains("Set default profile"));
+    assert_eq!(default_profile_id(&env), Some(BETA_ID.to_string()));
+
+    let output = env.run(&["default", "show"]);
+    assert!(output.contains("Default profile"));
+    assert!(output.contains(BETA_ID));
+
+    let output = env.run(&["default", "clear"]);
+    assert!(output.contains("Cleared default profile"));
+    assert_eq!(default_profile_id(&env), None);
+
+    let output = env.run(&["default", "show"]);
+    assert!(output.contains("No default profile set"));
+}
+
+#[test]
+fn ui_delete_default_profile_clears_default() {
+    let env = TestEnv::new();
+    seed_profiles(&env);
+    env.run(&["default", "set", "--label", "beta"]);
+    env.run(&["delete", "--label", "beta", "--yes"]);
+    assert_eq!(default_profile_id(&env), None);
+}
+
+#[test]
+fn ui_load_uses_default_when_notty() {
+    let env = TestEnv::new();
+    seed_profiles(&env);
+    env.run(&["default", "set", "--id", BETA_ID]);
+    seed_alpha(&env);
+
+    let output = env.run(&["load"]);
+    assert!(output.contains("Loaded profile"));
+    assert!(output.contains(BETA_EMAIL));
+    assert!(env.read_auth().contains(BETA_ACCOUNT));
 }
 
 #[test]

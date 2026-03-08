@@ -84,6 +84,16 @@ fn run(cli: Cli) -> Result<(), String> {
             crate::cli::LabelCommands::Clear { label, id } => {
                 clear_profile_label(&paths, label, id)
             }
+            crate::cli::LabelCommands::Rename { label, to } => {
+                rename_profile_label(&paths, label, to)
+            }
+        },
+        Commands::Default { command } => match command {
+            crate::cli::DefaultCommands::Set { label, id } => {
+                set_default_profile(&paths, label, id)
+            }
+            crate::cli::DefaultCommands::Clear => clear_default_profile(&paths),
+            crate::cli::DefaultCommands::Show => show_default_profile(&paths),
         },
         Commands::Status {
             all,

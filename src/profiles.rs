@@ -156,6 +156,76 @@ pub fn clear_profile_label(
     Ok(())
 }
 
+pub fn rename_profile_label(paths: &Paths, label: String, to: String) -> Result<(), String> {
+    let use_color = use_color_stdout();
+    let mut store = ProfileStore::load(paths)?;
+    let old_label = trim_label(&label)?.to_string();
+    let target_id = resolve_label_id(&store.labels, &old_label)?;
+    let new_label = trim_label(&to)?.to_string();
+
+    assign_label(&mut store.labels, &new_label, &target_id)?;
+    store.save(paths)?;
+
+    let message = format_action(
+        &format!("Renamed label '{}' to '{}'", old_label, new_label),
+        use_color,
+    );
+    print_output_block(&message);
+    Ok(())
+}
+
+pub fn set_default_profile(
+    paths: &Paths,
+    label: Option<String>,
+    id: Option<String>,
+) -> Result<(), String> {
+    let use_color = use_color_stdout();
+    let mut store = ProfileStore::load(paths)?;
+    let target_id = resolve_label_target_id(&store, label.as_deref(), id.as_deref())?;
+    store.profiles_index.default_profile_id = Some(target_id.clone());
+    store.save(paths)?;
+
+    let display = default_profile_display(&store, &target_id, use_color);
+    let message = format_action(&format!("Set default profile {}", display), use_color);
+    print_output_block(&message);
+    Ok(())
+}
+
+pub fn clear_default_profile(paths: &Paths) -> Result<(), String> {
+    let use_color = use_color_stdout();
+    let mut store = ProfileStore::load(paths)?;
+    store.profiles_index.default_profile_id = None;
+    store.save(paths)?;
+
+    let message = format_action("Cleared default profile", use_color);
+    print_output_block(&message);
+    Ok(())
+}
+
+pub fn show_default_profile(paths: &Paths) -> Result<(), String> {
+    let use_color = use_color_stdout();
+    let store = ProfileStore::load(paths)?;
+    let Some(default_id) = store.profiles_index.default_profile_id.as_deref() else {
+        print_output_block("No default profile set.");
+        return Ok(());
+    };
+
+    let display = default_profile_display(&store, default_id, use_color);
+    let message = format_action(&format!("Default profile {}", display), use_color);
+    print_output_block(&message);
+    Ok(())
+}
+
+fn default_profile_display(store: &ProfileStore, id: &str, use_color: bool) -> String {
+    let label = label_for_id(&store.labels, id);
+    let index_entry = store.profiles_index.profiles.get(id);
+    if index_entry.is_none() {
+        return format!("{} [id: {}]", id, id);
+    }
+    let display = profile_info_with_fallback(None, index_entry, label, false, use_color).display;
+    format!("{} [id: {}]", display, id)
+}
+
 pub fn export_profiles(
     paths: &Paths,
     label: Option<String>,
@@ -316,6 +386,7 @@ pub fn load_profile(
         "load",
         label.as_deref(),
         id.as_deref(),
+        snapshot.index.default_profile_id.as_deref(),
         &snapshot,
         &candidates,
     )?;
@@ -641,12 +712,14 @@ fn status_all_profiles(paths: &Paths, json: bool, show_errors: bool) -> Result<(
 
 pub type Labels = BTreeMap<String, String>;
 
-const PROFILES_INDEX_VERSION: u8 = 2;
+const PROFILES_INDEX_VERSION: u8 = 3;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct ProfilesIndex {
     #[serde(default = "profiles_index_version")]
     version: u8,
+    #[serde(default)]
+    default_profile_id: Option<String>,
     #[serde(default)]
     profiles: BTreeMap<String, ProfileIndexEntry>,
 }
@@ -655,6 +728,7 @@ impl Default for ProfilesIndex {
     fn default() -> Self {
         Self {
             version: PROFILES_INDEX_VERSION,
+            default_profile_id: None,
             profiles: BTreeMap::new(),
         }
     }
@@ -730,6 +804,13 @@ pub(crate) fn write_profiles_index(paths: &Paths, index: &ProfilesIndex) -> Resu
 fn prune_profiles_index(index: &mut ProfilesIndex, profiles_dir: &Path) -> Result<(), String> {
     let ids = collect_profile_ids(profiles_dir)?;
     index.profiles.retain(|id, _| ids.contains(id));
+    if index
+        .default_profile_id
+        .as_ref()
+        .is_some_and(|id| !ids.contains(id))
+    {
+        index.default_profile_id = None;
+    }
     Ok(())
 }
 
@@ -1248,6 +1329,9 @@ fn rename_profile_id(
     if let Some(entry) = profiles_index.profiles.remove(from) {
         profiles_index.profiles.insert(desired.clone(), entry);
     }
+    if profiles_index.default_profile_id.as_deref() == Some(from) {
+        profiles_index.default_profile_id = Some(desired.clone());
+    }
     Ok(desired)
 }
 
@@ -1455,6 +1539,7 @@ fn pick_one(
     action: &str,
     label: Option<&str>,
     id: Option<&str>,
+    default_id: Option<&str>,
     snapshot: &Snapshot,
     candidates: &[Candidate],
 ) -> Result<Candidate, String> {
@@ -1462,8 +1547,14 @@ fn pick_one(
         select_by_label(label, &snapshot.labels, candidates)
     } else if let Some(id) = id {
         select_by_id(id, candidates)
+    } else if !io::stdin().is_terminal() {
+        if let Some(default_id) = default_id {
+            select_by_id(default_id, candidates)
+        } else {
+            require_tty(action)?;
+            unreachable!("require_tty should always return Err in non-interactive mode")
+        }
     } else {
-        require_tty(action)?;
         select_single_profile("", candidates)
     }
 }

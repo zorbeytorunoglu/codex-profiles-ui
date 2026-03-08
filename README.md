@@ -101,10 +101,16 @@ rm ~/.local/bin/codex-profiles
 | `codex-profiles doctor [--json]` | Run local diagnostics for auth, profile storage, and install state. |
 | `codex-profiles label set [options]` | Add or replace a label on a saved profile. |
 | `codex-profiles label clear [options]` | Remove a label from a saved profile. |
+| `codex-profiles label rename [options]` | Rename an existing label without using set/clear manually. |
+| `codex-profiles default [set\|clear\|show]` | Manage the default saved profile used by non-interactive load. |
 | `codex-profiles status [options]` | Show usage for the current profile, or all saved profiles with `--all`. Use `--json` for structured output. |
 | `codex-profiles delete [options]` | Delete profiles. Use `--label <name>`, repeat `--id <profile-id>`, and `--yes` as needed. |
 
 Label examples: `codex-profiles label set --id <profile-id> --to work`, `codex-profiles label clear --label work`.
+
+Default examples: `codex-profiles default set --label work`, `codex-profiles default show`, `codex-profiles default clear`.
+
+When `load` runs without a selector in a non-interactive session, it uses the saved default profile if one is set.
 
 `status --json` returns the current profile object (or `null`); `status --all --json` returns `profiles` plus hidden-profile counts.
 

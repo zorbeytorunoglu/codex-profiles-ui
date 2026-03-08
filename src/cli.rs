@@ -76,6 +76,11 @@ pub enum Commands {
         #[command(subcommand)]
         command: LabelCommands,
     },
+    /// Manage the default saved profile
+    Default {
+        #[command(subcommand)]
+        command: DefaultCommands,
+    },
     /// Show usage details for the current or saved profiles
     Status {
         /// Show usage for all saved profiles
@@ -131,6 +136,35 @@ pub enum LabelCommands {
         #[arg(long, conflicts_with = "label", required_unless_present = "label")]
         id: Option<String>,
     },
+    /// Rename an existing label
+    Rename {
+        /// Existing label to rename
+        #[arg(value_name = "label")]
+        #[arg(long)]
+        label: String,
+        /// New label to assign
+        #[arg(long, value_name = "label")]
+        to: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum DefaultCommands {
+    /// Set the default saved profile
+    Set {
+        /// Select the profile matching this label
+        #[arg(value_name = "label")]
+        #[arg(long, conflicts_with = "id", required_unless_present = "id")]
+        label: Option<String>,
+        /// Select the profile matching this exact id
+        #[arg(value_name = "profile-id")]
+        #[arg(long, conflicts_with = "label", required_unless_present = "label")]
+        id: Option<String>,
+    },
+    /// Clear the default saved profile
+    Clear,
+    /// Show the current default saved profile
+    Show,
 }
 
 pub fn command_with_examples() -> Command {
@@ -143,6 +177,6 @@ pub fn command_with_examples() -> Command {
 
 fn examples_root(name: &str) -> String {
     format!(
-        "Examples:\n  {name} save --label work\n  {name} load --label work\n  {name} load --id mail@example.com-team --force\n  {name} list\n  {name} list --json\n  {name} export --output profiles-export.json\n  {name} import --input profiles-export.json\n  {name} doctor\n  {name} doctor --json\n  {name} label set --id mail@example.com-team --to work\n  {name} label clear --label work\n  {name} status\n  {name} status --json\n  {name} status --all --json\n  {name} delete --label work\n  {name} delete --id mail@example.com-team --yes"
+        "Examples:\n  {name} save --label work\n  {name} load --label work\n  {name} load --id mail@example.com-team --force\n  {name} list\n  {name} list --json\n  {name} export --output profiles-export.json\n  {name} import --input profiles-export.json\n  {name} doctor\n  {name} doctor --json\n  {name} label rename --label work --to personal\n  {name} default set --label personal\n  {name} default show\n  {name} status\n  {name} status --json\n  {name} status --all --json\n  {name} delete --label work\n  {name} delete --id mail@example.com-team --yes"
     )
 }
