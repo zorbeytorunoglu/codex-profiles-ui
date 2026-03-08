@@ -35,7 +35,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
-- `status --label` support (status now targets current profile, or all profiles with `--all`)
 - Last-used timestamp tracking in `profiles.json` profile metadata
 - Legacy `cx` shorthand script (use `codex-profiles` directly)
 

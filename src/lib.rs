@@ -97,9 +97,11 @@ fn run(cli: Cli) -> Result<(), String> {
         },
         Commands::Status {
             all,
+            label,
+            id,
             json,
             show_errors,
-        } => status_profiles(&paths, all, json, show_errors),
+        } => status_profiles(&paths, all, label, id, json, show_errors),
         Commands::Delete { yes, label, id } => delete_profile(&paths, yes, label, id),
     }
 }

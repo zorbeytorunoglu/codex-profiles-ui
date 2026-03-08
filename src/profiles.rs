@@ -555,12 +555,19 @@ pub fn list_profiles(paths: &Paths, json: bool, show_id: bool) -> Result<(), Str
 pub fn status_profiles(
     paths: &Paths,
     all: bool,
+    label: Option<String>,
+    id: Option<String>,
     json: bool,
     show_errors: bool,
 ) -> Result<(), String> {
     if all {
         return status_all_profiles(paths, json, show_errors);
     }
+
+    if label.is_some() || id.is_some() {
+        return status_selected_profile(paths, label.as_deref(), id.as_deref(), json);
+    }
+
     let snapshot = load_snapshot(paths, false).ok();
     let current_saved_id = snapshot
         .as_ref()
@@ -590,6 +597,61 @@ pub fn status_profiles(
         let message = format_no_profiles(paths, ctx.use_color);
         print_output_block(&message);
     }
+    Ok(())
+}
+
+fn status_selected_profile(
+    paths: &Paths,
+    label: Option<&str>,
+    id: Option<&str>,
+    json: bool,
+) -> Result<(), String> {
+    let use_color = use_color_stdout();
+    let no_profiles = format_no_profiles(paths, use_color);
+    let (snapshot, ordered) = match load_snapshot_ordered(paths, false, &no_profiles) {
+        Ok(result) => result,
+        Err(message) => {
+            if message == no_profiles {
+                if json {
+                    return print_current_status_json(None);
+                }
+                print_output_block(&message);
+                return Ok(());
+            }
+            return Err(message);
+        }
+    };
+    let current_saved_id = current_saved_id(paths, &snapshot.tokens);
+    let mut ctx = ListCtx::new(paths, true, false, false);
+    if json {
+        ctx.use_color = false;
+    }
+
+    let candidates = build_candidates(&ordered, &snapshot, current_saved_id.as_deref());
+    let selected = if let Some(label) = label {
+        select_by_label(label, &snapshot.labels, &candidates)?
+    } else if let Some(id) = id {
+        select_by_id(id, &candidates)?
+    } else {
+        unreachable!("status selector requires label or id")
+    };
+
+    let mut entries = make_entries(
+        std::slice::from_ref(&selected.id),
+        &snapshot,
+        current_saved_id.as_deref(),
+        &ctx,
+    );
+    let Some(entry) = entries.pop() else {
+        return Err(profile_not_found(use_color_stderr()));
+    };
+
+    if json {
+        return print_current_status_json(Some(entry));
+    }
+
+    let lines = render_entries(&[entry], &ctx, false);
+    print_output_block(&lines.join("\n"));
     Ok(())
 }
 
@@ -2954,8 +3016,8 @@ mod tests {
         crate::ensure_paths(&paths).unwrap();
         save_profile(&paths, Some("team".to_string())).unwrap();
         list_profiles(&paths, false, false).unwrap();
-        status_profiles(&paths, false, false, false).unwrap();
-        status_profiles(&paths, true, false, false).unwrap();
+        status_profiles(&paths, false, None, None, false, false).unwrap();
+        status_profiles(&paths, true, None, None, false, false).unwrap();
     }
 
     #[test]

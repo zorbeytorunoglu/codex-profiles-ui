@@ -1486,12 +1486,111 @@ fn ui_status_json_unsaved_current_profile() {
 }
 
 #[test]
-fn ui_status_rejects_label_flag() {
+fn ui_status_label_command() {
     let env = TestEnv::new();
     seed_profiles(&env);
     seed_alpha(&env);
-    let err = env.run_expect_error(&["status", "--label", "beta"]);
-    assert!(err.contains("unexpected argument '--label'"));
+    let usage_body = r#"{"rate_limit":{"primary_window":{"used_percent":20,"limit_window_seconds":18000,"reset_at":2000000000}}}"#;
+    let (usage_addr, usage_handle) = start_usage_server(usage_body, 6).expect("usage server");
+    env.write_config(&format!("http://{usage_addr}/backend-api"));
+
+    let output = env.run(&["status", "--label", "beta"]);
+    assert!(output.contains(BETA_EMAIL));
+    assert!(!output.contains(ALPHA_EMAIL));
+    assert!(!output.contains("<- current profile"));
+
+    let _ = usage_handle.join();
+}
+
+#[test]
+fn ui_status_id_json_command() {
+    let env = TestEnv::new();
+    seed_profiles(&env);
+    seed_alpha(&env);
+    let usage_body = r#"{"rate_limit":{"primary_window":{"used_percent":20,"limit_window_seconds":18000,"reset_at":2000000000}}}"#;
+    let (usage_addr, usage_handle) = start_usage_server(usage_body, 6).expect("usage server");
+    env.write_config(&format!("http://{usage_addr}/backend-api"));
+
+    let output = env.run(&["status", "--id", BETA_ID, "--json"]);
+    let profile: serde_json::Value = serde_json::from_str(&output).expect("parse status json");
+    assert_eq!(profile.get("id").unwrap(), &serde_json::json!(BETA_ID));
+    assert_eq!(profile.get("label").unwrap(), &serde_json::json!("beta"));
+    assert_eq!(
+        profile.get("email").unwrap(),
+        &serde_json::json!(BETA_EMAIL)
+    );
+    assert_eq!(
+        profile.get("is_current").unwrap(),
+        &serde_json::json!(false)
+    );
+    assert_eq!(profile.get("is_saved").unwrap(), &serde_json::json!(true));
+
+    let _ = usage_handle.join();
+}
+
+#[test]
+fn ui_status_label_json_command() {
+    let env = TestEnv::new();
+    seed_profiles(&env);
+    seed_alpha(&env);
+    let usage_body = r#"{"rate_limit":{"primary_window":{"used_percent":20,"limit_window_seconds":18000,"reset_at":2000000000}}}"#;
+    let (usage_addr, usage_handle) = start_usage_server(usage_body, 6).expect("usage server");
+    env.write_config(&format!("http://{usage_addr}/backend-api"));
+
+    let output = env.run(&["status", "--label", "beta", "--json"]);
+    let profile: serde_json::Value = serde_json::from_str(&output).expect("parse status json");
+    assert_eq!(profile.get("id").unwrap(), &serde_json::json!(BETA_ID));
+    assert_eq!(profile.get("label").unwrap(), &serde_json::json!("beta"));
+
+    let _ = usage_handle.join();
+}
+
+#[test]
+fn ui_status_selector_json_empty_profiles() {
+    let env = TestEnv::new();
+    let output = env.run(&["status", "--label", "beta", "--json"]);
+    let json: serde_json::Value = serde_json::from_str(&output).expect("parse status json");
+    assert_eq!(json, serde_json::Value::Null);
+}
+
+#[test]
+fn ui_status_rejects_all_with_label() {
+    let env = TestEnv::new();
+    let err = env.run_expect_error(&["status", "--all", "--label", "beta"]);
+    assert!(err.contains("--all"));
+    assert!(err.contains("--label"));
+}
+
+#[test]
+fn ui_status_rejects_all_with_id() {
+    let env = TestEnv::new();
+    let err = env.run_expect_error(&["status", "--all", "--id", BETA_ID]);
+    assert!(err.contains("--all"));
+    assert!(err.contains("--id"));
+}
+
+#[test]
+fn ui_status_rejects_label_with_id() {
+    let env = TestEnv::new();
+    let err = env.run_expect_error(&["status", "--label", "beta", "--id", BETA_ID]);
+    assert!(err.contains("--label"));
+    assert!(err.contains("--id"));
+}
+
+#[test]
+fn ui_status_label_not_found() {
+    let env = TestEnv::new();
+    seed_profiles(&env);
+    let err = env.run_expect_error(&["status", "--label", "missing"]);
+    assert!(err.contains("Label 'missing'"));
+}
+
+#[test]
+fn ui_status_id_not_found() {
+    let env = TestEnv::new();
+    seed_profiles(&env);
+    let err = env.run_expect_error(&["status", "--id", "missing-id"]);
+    assert!(err.contains("Profile id 'missing-id'"));
 }
 
 #[test]
