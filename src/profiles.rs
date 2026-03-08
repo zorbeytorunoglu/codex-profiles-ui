@@ -8,6 +8,7 @@ use std::env;
 use std::fmt;
 use std::fs;
 use std::io::{self, IsTerminal as _};
+use std::path::Component;
 use std::path::{Path, PathBuf};
 
 use crate::{
@@ -32,6 +33,12 @@ use crate::{
     UI_ERROR_PREFIX, UI_ERROR_TWO_LINE,
 };
 use crate::{
+    AuthFile, ProfileIdentityKey, Tokens, extract_email_and_plan, extract_profile_identity,
+    is_api_key_profile, is_free_plan, is_profile_ready, profile_error, read_tokens,
+    read_tokens_opt, refresh_profile_tokens, require_identity, token_account_id,
+    tokens_from_api_key,
+};
+use crate::{
     CANCELLED_MESSAGE, format_action, format_entry_header, format_error, format_label_later_hint,
     format_list_hint, format_no_profiles, format_save_before_load_or_force, format_unsaved_warning,
     format_warning, inquire_select_render_config, is_inquire_cancel, is_plain, normalize_error,
@@ -42,11 +49,6 @@ use crate::{
     copy_atomic, write_atomic,
 };
 use crate::{
-    ProfileIdentityKey, Tokens, extract_email_and_plan, extract_profile_identity,
-    is_api_key_profile, is_free_plan, is_profile_ready, profile_error, read_tokens,
-    read_tokens_opt, refresh_profile_tokens, require_identity, token_account_id,
-};
-use crate::{
     UsageLock, fetch_usage_details, format_usage_unavailable, lock_usage, read_base_url,
     usage_unavailable,
 };
@@ -54,6 +56,26 @@ use crate::{
 const DEFAULT_USAGE_CONCURRENCY: usize = 32;
 const MAX_USAGE_CONCURRENCY: usize = 128;
 const USAGE_CONCURRENCY_ENV: &str = "CODEX_PROFILES_USAGE_CONCURRENCY";
+
+#[derive(Serialize, Deserialize)]
+struct ExportBundle {
+    version: u8,
+    profiles: Vec<ExportedProfile>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct ExportedProfile {
+    id: String,
+    label: Option<String>,
+    contents: serde_json::Value,
+}
+
+struct PreparedImportProfile {
+    id: String,
+    label: Option<String>,
+    contents: Vec<u8>,
+    tokens: Tokens,
+}
 
 pub fn save_profile(paths: &Paths, label: Option<String>) -> Result<(), String> {
     let use_color = use_color_stdout();
@@ -128,6 +150,132 @@ pub fn clear_profile_label(
 
     let message = format_action(
         &crate::msg1(PROFILE_MSG_LABEL_CLEARED, target_id),
+        use_color,
+    );
+    print_output_block(&message);
+    Ok(())
+}
+
+pub fn export_profiles(
+    paths: &Paths,
+    label: Option<String>,
+    ids: Vec<String>,
+    output: PathBuf,
+) -> Result<(), String> {
+    if output.exists() {
+        return Err(format!(
+            "Error: Export file already exists: {}",
+            output.display()
+        ));
+    }
+
+    let use_color = use_color_stdout();
+    let store = ProfileStore::load(paths)?;
+    let selected_ids = resolve_export_ids(paths, &store, label.as_deref(), &ids)?;
+    let mut profiles = Vec::with_capacity(selected_ids.len());
+
+    for id in selected_ids {
+        let path = profile_path_for_id(&paths.profiles, &id);
+        let raw = fs::read_to_string(&path)
+            .map_err(|err| crate::msg2(PROFILE_ERR_READ_PROFILES_DIR, path.display(), err))?;
+        let contents: serde_json::Value = serde_json::from_str(&raw)
+            .map_err(|err| format!("Error: Saved profile '{}' is invalid JSON: {err}", id))?;
+        profiles.push(ExportedProfile {
+            label: label_for_id(&store.labels, &id),
+            id,
+            contents,
+        });
+    }
+
+    let bundle = ExportBundle {
+        version: 1,
+        profiles,
+    };
+    let mut bytes = serde_json::to_vec_pretty(&bundle).map_err(|err| err.to_string())?;
+    bytes.push(b'\n');
+    write_atomic(&output, &bytes)?;
+    tighten_export_permissions(&output)?;
+
+    let count = bundle.profiles.len();
+    let noun = if count == 1 { "profile" } else { "profiles" };
+    let message = format_action(
+        &format!("Exported {count} {noun} to {}", output.display()),
+        use_color,
+    );
+    print_output_block(&message);
+    Ok(())
+}
+
+pub fn import_profiles(paths: &Paths, input: PathBuf) -> Result<(), String> {
+    let use_color = use_color_stdout();
+    let raw = fs::read_to_string(&input).map_err(|err| {
+        format!(
+            "Error: Could not read import file {}: {err}",
+            input.display()
+        )
+    })?;
+    let bundle: ExportBundle = serde_json::from_str(&raw)
+        .map_err(|err| format!("Error: Import file is invalid JSON: {err}"))?;
+    if bundle.version != 1 {
+        return Err(format!(
+            "Error: Import file version {} is not supported.",
+            bundle.version
+        ));
+    }
+
+    let mut store = ProfileStore::load(paths)?;
+    let existing_ids = collect_profile_ids(&paths.profiles)?;
+    let mut staged_labels = store.labels.clone();
+    let mut seen_ids = HashSet::new();
+    let mut prepared = Vec::with_capacity(bundle.profiles.len());
+
+    for profile in bundle.profiles {
+        validate_import_profile_id(&profile.id)?;
+        if !seen_ids.insert(profile.id.clone()) {
+            return Err(format!(
+                "Error: Import bundle contains duplicate profile id '{}'.",
+                profile.id
+            ));
+        }
+        if existing_ids.contains(&profile.id) {
+            return Err(format!("Error: Profile '{}' already exists.", profile.id));
+        }
+        if let Some(label) = profile.label.as_deref() {
+            assign_label(&mut staged_labels, label, &profile.id)?;
+        }
+        prepared.push(prepare_import_profile(profile)?);
+    }
+
+    let mut written_ids = Vec::with_capacity(prepared.len());
+    for profile in &prepared {
+        let path = profile_path_for_id(&paths.profiles, &profile.id);
+        if let Err(err) = write_atomic(&path, &profile.contents) {
+            cleanup_imported_profiles(paths, &written_ids);
+            return Err(err);
+        }
+        written_ids.push(profile.id.clone());
+    }
+
+    for profile in &prepared {
+        if let Some(label) = profile.label.as_deref() {
+            assign_label(&mut store.labels, label, &profile.id)?;
+        }
+        update_profiles_index_entry(
+            &mut store.profiles_index,
+            &profile.id,
+            Some(&profile.tokens),
+            profile.label.clone(),
+        );
+    }
+    if let Err(err) = store.save(paths) {
+        cleanup_imported_profiles(paths, &written_ids);
+        return Err(err);
+    }
+
+    let count = prepared.len();
+    let noun = if count == 1 { "profile" } else { "profiles" };
+    let message = format_action(
+        &format!("Imported {count} {noun} from {}", input.display()),
         use_color,
     );
     print_output_block(&message);
@@ -742,6 +890,110 @@ pub fn collect_profile_ids(profiles_dir: &Path) -> Result<HashSet<String>, Strin
         }
     }
     Ok(ids)
+}
+
+fn resolve_export_ids(
+    paths: &Paths,
+    store: &ProfileStore,
+    label: Option<&str>,
+    ids: &[String],
+) -> Result<Vec<String>, String> {
+    if let Some(label) = label {
+        return Ok(vec![resolve_label_target_id(store, Some(label), None)?]);
+    }
+
+    let available_ids = collect_profile_ids(&paths.profiles)?;
+    if ids.is_empty() {
+        let mut all: Vec<String> = available_ids.into_iter().collect();
+        all.sort();
+        return Ok(all);
+    }
+
+    let mut selected = Vec::new();
+    let mut seen = HashSet::new();
+    for id in ids {
+        if !available_ids.contains(id) {
+            return Err(crate::msg2(
+                PROFILE_ERR_ID_NO_MATCH,
+                id,
+                format_list_hint(use_color_stderr()),
+            ));
+        }
+        if seen.insert(id.clone()) {
+            selected.push(id.clone());
+        }
+    }
+    Ok(selected)
+}
+
+fn prepare_import_profile(profile: ExportedProfile) -> Result<PreparedImportProfile, String> {
+    let ExportedProfile {
+        id,
+        label,
+        contents,
+    } = profile;
+    let mut bytes = serde_json::to_vec_pretty(&contents).map_err(|err| {
+        format!(
+            "Error: Exported profile '{}' could not be serialized: {err}",
+            id
+        )
+    })?;
+    bytes.push(b'\n');
+
+    let auth: AuthFile = serde_json::from_value(contents)
+        .map_err(|err| format!("Error: Exported profile '{}' is invalid JSON: {err}", id))?;
+    let tokens = if let Some(tokens) = auth.tokens {
+        tokens
+    } else if let Some(api_key) = auth.openai_api_key.as_deref() {
+        tokens_from_api_key(api_key)
+    } else {
+        return Err(format!(
+            "Error: Exported profile '{}' is missing tokens or API key.",
+            id
+        ));
+    };
+    if !is_profile_ready(&tokens) {
+        return Err(format!("Error: Exported profile '{}' is incomplete.", id));
+    }
+
+    Ok(PreparedImportProfile {
+        id,
+        label,
+        contents: bytes,
+        tokens,
+    })
+}
+
+fn validate_import_profile_id(id: &str) -> Result<(), String> {
+    let mut components = Path::new(id).components();
+    if !matches!(components.next(), Some(Component::Normal(_))) || components.next().is_some() {
+        return Err(format!("Error: Imported profile id '{}' is not safe.", id));
+    }
+    if matches!(id, "profiles" | "update") {
+        return Err(format!("Error: Imported profile id '{}' is reserved.", id));
+    }
+    Ok(())
+}
+
+fn cleanup_imported_profiles(paths: &Paths, ids: &[String]) {
+    for id in ids {
+        let _ = fs::remove_file(profile_path_for_id(&paths.profiles, id));
+    }
+}
+
+fn tighten_export_permissions(path: &Path) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let permissions = fs::Permissions::from_mode(0o600);
+        fs::set_permissions(path, permissions).map_err(|err| {
+            format!(
+                "Error: Could not secure export file {}: {err}",
+                path.display()
+            )
+        })?;
+    }
+    Ok(())
 }
 
 pub fn load_profile_tokens_map(

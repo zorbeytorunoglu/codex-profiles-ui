@@ -96,6 +96,8 @@ rm ~/.local/bin/codex-profiles
 | `codex-profiles save [options]` | Save the current `auth.json` as a profile. Use `--label <name>` to label it. |
 | `codex-profiles load [options]` | Load a profile without re-login. Use `--label <name>`, `--id <profile-id>`, and `--force` as needed. |
 | `codex-profiles list [options]` | List saved profiles. Use `--show-id` or `--json` for alternate output. |
+| `codex-profiles export [options]` | Export saved profiles to a single JSON bundle. |
+| `codex-profiles import [options]` | Import saved profiles from a JSON bundle. |
 | `codex-profiles doctor [--json]` | Run local diagnostics for auth, profile storage, and install state. |
 | `codex-profiles label set [options]` | Add or replace a label on a saved profile. |
 | `codex-profiles label clear [options]` | Remove a label from a saved profile. |
@@ -105,6 +107,10 @@ rm ~/.local/bin/codex-profiles
 Label examples: `codex-profiles label set --id <profile-id> --to work`, `codex-profiles label clear --label work`.
 
 `status --json` returns the current profile object (or `null`); `status --all --json` returns `profiles` plus hidden-profile counts.
+
+`export --output <file>` exports all saved profiles by default. Use `--label` or repeated `--id` to export a smaller set.
+
+Export bundles contain secrets. Store them securely. `import` fails on id or label conflicts instead of overwriting existing profiles.
 
 > [!WARNING]
 > Deleting a profile does not log you out. It only removes the saved profile file.

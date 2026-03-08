@@ -267,6 +267,11 @@ fn profile_label(env: &TestEnv, id: &str) -> Option<String> {
         .map(str::to_string)
 }
 
+fn read_json_file(path: &PathBuf) -> serde_json::Value {
+    let raw = fs::read_to_string(path).expect("read json file");
+    serde_json::from_str(&raw).expect("parse json file")
+}
+
 fn resolve_bin_path() -> PathBuf {
     if let Ok(path) = env::var("CARGO_BIN_EXE_codex-profiles") {
         return PathBuf::from(path);
@@ -611,6 +616,256 @@ fn ui_label_clear_label_not_found() {
     seed_profiles(&env);
     let err = env.run_expect_error(&["label", "clear", "--label", "missing"]);
     assert!(err.contains("Label 'missing' was not found"));
+}
+
+#[test]
+fn ui_export_all_profiles_command() {
+    let env = TestEnv::new();
+    seed_profiles(&env);
+    let export_path = env.home_path().join("profiles-export.json");
+    let output = env.run(&["export", "--output", export_path.to_str().unwrap()]);
+    assert!(output.contains("Exported 2 profiles"));
+
+    let json = read_json_file(&export_path);
+    let profiles = json
+        .get("profiles")
+        .and_then(|value| value.as_array())
+        .expect("profiles array");
+    assert_eq!(json.get("version").unwrap(), &serde_json::json!(1));
+    assert_eq!(profiles.len(), 2);
+    assert!(profiles.iter().any(|profile| {
+        profile.get("id") == Some(&serde_json::json!(ALPHA_ID))
+            && profile.get("label") == Some(&serde_json::json!("alpha"))
+    }));
+    assert!(profiles.iter().any(|profile| {
+        profile.get("id") == Some(&serde_json::json!(BETA_ID))
+            && profile.get("label") == Some(&serde_json::json!("beta"))
+    }));
+}
+
+#[test]
+fn ui_export_selected_id_command() {
+    let env = TestEnv::new();
+    seed_profiles(&env);
+    let export_path = env.home_path().join("profiles-export-alpha.json");
+    let output = env.run(&[
+        "export",
+        "--id",
+        ALPHA_ID,
+        "--output",
+        export_path.to_str().unwrap(),
+    ]);
+    assert!(output.contains("Exported 1 profile"));
+
+    let json = read_json_file(&export_path);
+    let profiles = json
+        .get("profiles")
+        .and_then(|value| value.as_array())
+        .expect("profiles array");
+    assert_eq!(profiles.len(), 1);
+    assert_eq!(profiles[0].get("id").unwrap(), &serde_json::json!(ALPHA_ID));
+}
+
+#[test]
+fn ui_export_selected_label_command() {
+    let env = TestEnv::new();
+    seed_profiles(&env);
+    let export_path = env.home_path().join("profiles-export-beta.json");
+    let output = env.run(&[
+        "export",
+        "--label",
+        "beta",
+        "--output",
+        export_path.to_str().unwrap(),
+    ]);
+    assert!(output.contains("Exported 1 profile"));
+
+    let json = read_json_file(&export_path);
+    let profiles = json
+        .get("profiles")
+        .and_then(|value| value.as_array())
+        .expect("profiles array");
+    assert_eq!(profiles.len(), 1);
+    assert_eq!(profiles[0].get("id").unwrap(), &serde_json::json!(BETA_ID));
+    assert_eq!(
+        profiles[0].get("label").unwrap(),
+        &serde_json::json!("beta")
+    );
+}
+
+#[test]
+fn ui_import_profiles_command() {
+    let src = TestEnv::new();
+    seed_profiles(&src);
+    let export_path = src.home_path().join("profiles-export.json");
+    src.run(&["export", "--output", export_path.to_str().unwrap()]);
+
+    let dest = TestEnv::new();
+    let output = dest.run(&["import", "--input", export_path.to_str().unwrap()]);
+    assert!(output.contains("Imported 2 profiles"));
+
+    let json: serde_json::Value =
+        serde_json::from_str(&dest.run(&["list", "--json"])).expect("parse list json");
+    let profiles = json
+        .get("profiles")
+        .and_then(|value| value.as_array())
+        .expect("profiles array");
+    assert_eq!(profiles.len(), 2);
+    assert!(
+        profiles
+            .iter()
+            .any(|profile| profile.get("id") == Some(&serde_json::json!(ALPHA_ID)))
+    );
+    assert!(profiles.iter().any(|profile| {
+        profile.get("id") == Some(&serde_json::json!(ALPHA_ID))
+            && profile.get("label") == Some(&serde_json::json!("alpha"))
+    }));
+    assert!(
+        profiles
+            .iter()
+            .any(|profile| profile.get("id") == Some(&serde_json::json!(BETA_ID)))
+    );
+    assert!(profiles.iter().any(|profile| {
+        profile.get("id") == Some(&serde_json::json!(BETA_ID))
+            && profile.get("label") == Some(&serde_json::json!("beta"))
+    }));
+}
+
+#[test]
+fn ui_import_rejects_existing_id_conflict() {
+    let src = TestEnv::new();
+    seed_profiles(&src);
+    let export_path = src.home_path().join("profiles-export.json");
+    src.run(&["export", "--output", export_path.to_str().unwrap()]);
+
+    let dest = TestEnv::new();
+    seed_beta(&dest);
+    dest.run(&["save", "--label", "beta"]);
+    let err = dest.run_expect_error(&["import", "--input", export_path.to_str().unwrap()]);
+    assert!(err.contains(BETA_ID));
+    assert!(err.contains("already exists"));
+
+    let json: serde_json::Value =
+        serde_json::from_str(&dest.run(&["list", "--json"])).expect("parse list json");
+    let profiles = json
+        .get("profiles")
+        .and_then(|value| value.as_array())
+        .expect("profiles array");
+    assert_eq!(profiles.len(), 1);
+    assert_eq!(profiles[0].get("id").unwrap(), &serde_json::json!(BETA_ID));
+}
+
+#[test]
+fn ui_import_rejects_existing_label_conflict() {
+    let src = TestEnv::new();
+    seed_alpha(&src);
+    src.run(&["save", "--label", "alpha"]);
+    let export_path = src.home_path().join("profiles-export-alpha.json");
+    src.run(&[
+        "export",
+        "--id",
+        ALPHA_ID,
+        "--output",
+        export_path.to_str().unwrap(),
+    ]);
+
+    let dest = TestEnv::new();
+    seed_beta(&dest);
+    dest.run(&["save", "--label", "beta"]);
+    dest.run(&["label", "set", "--id", BETA_ID, "--to", "alpha"]);
+    let err = dest.run_expect_error(&["import", "--input", export_path.to_str().unwrap()]);
+    assert!(err.contains("Label 'alpha' already exists"));
+
+    let json: serde_json::Value =
+        serde_json::from_str(&dest.run(&["list", "--json"])).expect("parse list json");
+    let profiles = json
+        .get("profiles")
+        .and_then(|value| value.as_array())
+        .expect("profiles array");
+    assert_eq!(profiles.len(), 1);
+    assert_eq!(profiles[0].get("id").unwrap(), &serde_json::json!(BETA_ID));
+    assert_eq!(
+        profiles[0].get("label").unwrap(),
+        &serde_json::json!("alpha")
+    );
+}
+
+#[test]
+fn ui_import_rejects_unsafe_profile_id() {
+    let src = TestEnv::new();
+    seed_alpha(&src);
+    src.run(&["save", "--label", "alpha"]);
+    let export_path = src.home_path().join("profiles-export-alpha.json");
+    src.run(&[
+        "export",
+        "--id",
+        ALPHA_ID,
+        "--output",
+        export_path.to_str().unwrap(),
+    ]);
+
+    let mut json = read_json_file(&export_path);
+    json["profiles"][0]["id"] = serde_json::json!("../auth");
+    fs::write(
+        &export_path,
+        format!(
+            "{}\n",
+            serde_json::to_string_pretty(&json).expect("serialize tampered export")
+        ),
+    )
+    .expect("write tampered export");
+
+    let dest = TestEnv::new();
+    let err = dest.run_expect_error(&["import", "--input", export_path.to_str().unwrap()]);
+    assert!(err.contains("Imported profile id '../auth' is not safe"));
+
+    let json: serde_json::Value =
+        serde_json::from_str(&dest.run(&["list", "--json"])).expect("parse list json");
+    let profiles = json
+        .get("profiles")
+        .and_then(|value| value.as_array())
+        .expect("profiles array");
+    assert!(profiles.is_empty());
+}
+
+#[test]
+fn ui_import_rejects_reserved_profile_id() {
+    let src = TestEnv::new();
+    seed_alpha(&src);
+    src.run(&["save", "--label", "alpha"]);
+    let export_path = src.home_path().join("profiles-export-alpha.json");
+    src.run(&[
+        "export",
+        "--id",
+        ALPHA_ID,
+        "--output",
+        export_path.to_str().unwrap(),
+    ]);
+
+    for reserved in ["profiles", "update"] {
+        let mut json = read_json_file(&export_path);
+        json["profiles"][0]["id"] = serde_json::json!(reserved);
+        fs::write(
+            &export_path,
+            format!(
+                "{}\n",
+                serde_json::to_string_pretty(&json).expect("serialize tampered export")
+            ),
+        )
+        .expect("write tampered export");
+
+        let dest = TestEnv::new();
+        let err = dest.run_expect_error(&["import", "--input", export_path.to_str().unwrap()]);
+        assert!(err.contains(&format!("Imported profile id '{reserved}' is reserved")));
+
+        let json: serde_json::Value =
+            serde_json::from_str(&dest.run(&["list", "--json"])).expect("parse list json");
+        let profiles = json
+            .get("profiles")
+            .and_then(|value| value.as_array())
+            .expect("profiles array");
+        assert!(profiles.is_empty());
+    }
 }
 
 #[test]
