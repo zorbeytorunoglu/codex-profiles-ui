@@ -116,7 +116,9 @@ When `load` runs without a selector in a non-interactive session, it uses the sa
 
 `export --output <file>` exports all saved profiles by default. Use `--label` or repeated `--id` to export a smaller set.
 
-Export bundles contain secrets. Store them securely. `import` fails on id or label conflicts instead of overwriting existing profiles.
+Export bundles contain secrets. Store them securely. `import` fails on id, label, or default-profile conflicts instead of overwriting existing state.
+
+When the exported set includes the current default profile, export/import preserves that default selection too.
 
 > [!WARNING]
 > Deleting a profile does not log you out. It only removes the saved profile file.

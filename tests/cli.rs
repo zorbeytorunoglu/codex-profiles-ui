@@ -682,6 +682,7 @@ fn ui_load_uses_default_when_notty() {
 fn ui_export_all_profiles_command() {
     let env = TestEnv::new();
     seed_profiles(&env);
+    env.run(&["default", "set", "--label", "beta"]);
     let export_path = env.home_path().join("profiles-export.json");
     let output = env.run(&["export", "--output", export_path.to_str().unwrap()]);
     assert!(output.contains("Exported 2 profiles"));
@@ -692,6 +693,10 @@ fn ui_export_all_profiles_command() {
         .and_then(|value| value.as_array())
         .expect("profiles array");
     assert_eq!(json.get("version").unwrap(), &serde_json::json!(1));
+    assert_eq!(
+        json.get("default_profile_id").unwrap(),
+        &serde_json::json!(BETA_ID)
+    );
     assert_eq!(profiles.len(), 2);
     assert!(profiles.iter().any(|profile| {
         profile.get("id") == Some(&serde_json::json!(ALPHA_ID))
@@ -730,6 +735,7 @@ fn ui_export_selected_id_command() {
 fn ui_export_selected_label_command() {
     let env = TestEnv::new();
     seed_profiles(&env);
+    env.run(&["default", "set", "--label", "alpha"]);
     let export_path = env.home_path().join("profiles-export-beta.json");
     let output = env.run(&[
         "export",
@@ -746,6 +752,10 @@ fn ui_export_selected_label_command() {
         .and_then(|value| value.as_array())
         .expect("profiles array");
     assert_eq!(profiles.len(), 1);
+    assert_eq!(
+        json.get("default_profile_id").unwrap(),
+        &serde_json::Value::Null
+    );
     assert_eq!(profiles[0].get("id").unwrap(), &serde_json::json!(BETA_ID));
     assert_eq!(
         profiles[0].get("label").unwrap(),
@@ -757,12 +767,14 @@ fn ui_export_selected_label_command() {
 fn ui_import_profiles_command() {
     let src = TestEnv::new();
     seed_profiles(&src);
+    src.run(&["default", "set", "--label", "beta"]);
     let export_path = src.home_path().join("profiles-export.json");
     src.run(&["export", "--output", export_path.to_str().unwrap()]);
 
     let dest = TestEnv::new();
     let output = dest.run(&["import", "--input", export_path.to_str().unwrap()]);
     assert!(output.contains("Imported 2 profiles"));
+    assert_eq!(default_profile_id(&dest), Some(BETA_ID.to_string()));
 
     let json: serde_json::Value =
         serde_json::from_str(&dest.run(&["list", "--json"])).expect("parse list json");
@@ -848,6 +860,51 @@ fn ui_import_rejects_existing_label_conflict() {
         profiles[0].get("label").unwrap(),
         &serde_json::json!("alpha")
     );
+}
+
+#[test]
+fn ui_import_rejects_existing_default_conflict() {
+    let src = TestEnv::new();
+    seed_profiles(&src);
+    src.run(&["default", "set", "--label", "beta"]);
+    let export_path = src.home_path().join("profiles-export.json");
+    src.run(&["export", "--output", export_path.to_str().unwrap()]);
+
+    let dest = TestEnv::new();
+    seed_alpha(&dest);
+    dest.run(&["save", "--label", "alpha"]);
+    dest.run(&["default", "set", "--label", "alpha"]);
+    let err = dest.run_expect_error(&["import", "--input", export_path.to_str().unwrap()]);
+    assert!(err.contains(ALPHA_ID));
+    assert!(err.contains("Clear it before importing a different default"));
+    assert_eq!(default_profile_id(&dest), Some(ALPHA_ID.to_string()));
+}
+
+#[test]
+fn ui_import_legacy_bundle_without_default_field() {
+    let src = TestEnv::new();
+    seed_profiles(&src);
+    src.run(&["default", "set", "--label", "beta"]);
+    let export_path = src.home_path().join("profiles-export.json");
+    src.run(&["export", "--output", export_path.to_str().unwrap()]);
+
+    let mut json = read_json_file(&export_path);
+    json.as_object_mut()
+        .expect("bundle object")
+        .remove("default_profile_id");
+    fs::write(
+        &export_path,
+        format!(
+            "{}\n",
+            serde_json::to_string_pretty(&json).expect("serialize legacy bundle")
+        ),
+    )
+    .expect("write legacy bundle");
+
+    let dest = TestEnv::new();
+    let output = dest.run(&["import", "--input", export_path.to_str().unwrap()]);
+    assert!(output.contains("Imported 2 profiles"));
+    assert_eq!(default_profile_id(&dest), None);
 }
 
 #[test]

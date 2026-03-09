@@ -60,6 +60,8 @@ const USAGE_CONCURRENCY_ENV: &str = "CODEX_PROFILES_USAGE_CONCURRENCY";
 #[derive(Serialize, Deserialize)]
 struct ExportBundle {
     version: u8,
+    #[serde(default)]
+    default_profile_id: Option<String>,
     profiles: Vec<ExportedProfile>,
 }
 
@@ -259,6 +261,11 @@ pub fn export_profiles(
 
     let bundle = ExportBundle {
         version: 1,
+        default_profile_id: store
+            .profiles_index
+            .default_profile_id
+            .clone()
+            .filter(|id| profiles.iter().any(|profile| profile.id == *id)),
         profiles,
     };
     let mut bytes = serde_json::to_vec_pretty(&bundle).map_err(|err| err.to_string())?;
@@ -298,6 +305,20 @@ pub fn import_profiles(paths: &Paths, input: PathBuf) -> Result<(), String> {
     let mut staged_labels = store.labels.clone();
     let mut seen_ids = HashSet::new();
     let mut prepared = Vec::with_capacity(bundle.profiles.len());
+    let imported_default_id = bundle
+        .default_profile_id
+        .clone()
+        .filter(|id| bundle.profiles.iter().any(|profile| profile.id == *id));
+    if let (Some(existing_default), Some(imported_default)) = (
+        store.profiles_index.default_profile_id.as_deref(),
+        imported_default_id.as_deref(),
+    ) && existing_default != imported_default
+    {
+        return Err(format!(
+            "Error: Default profile '{}' already exists. Clear it before importing a different default.",
+            existing_default
+        ));
+    }
 
     for profile in bundle.profiles {
         validate_import_profile_id(&profile.id)?;
@@ -336,6 +357,9 @@ pub fn import_profiles(paths: &Paths, input: PathBuf) -> Result<(), String> {
             Some(&profile.tokens),
             profile.label.clone(),
         );
+    }
+    if let Some(default_id) = imported_default_id {
+        store.profiles_index.default_profile_id = Some(default_id);
     }
     if let Err(err) = store.save(paths) {
         cleanup_imported_profiles(paths, &written_ids);

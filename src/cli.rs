@@ -61,7 +61,7 @@ pub enum Commands {
     },
     /// Import saved profiles from an export bundle
     Import {
-        /// Read the export bundle from this file (fails on id/label conflicts)
+        /// Read the export bundle from this file (fails on id, label, or default conflicts)
         #[arg(long, value_name = "file")]
         input: PathBuf,
     },
