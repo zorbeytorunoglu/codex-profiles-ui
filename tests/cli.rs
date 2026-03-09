@@ -1068,6 +1068,7 @@ fn ui_doctor_json_missing_state() {
         check.get("name") == Some(&serde_json::json!("current profile"))
             && check.get("level") == Some(&serde_json::json!("info"))
     }));
+    assert!(json.get("repairs").is_none());
     assert_eq!(summary.get("error").unwrap(), &serde_json::json!(0));
 }
 
@@ -1090,6 +1091,190 @@ fn ui_doctor_json_saved_current_profile() {
         check.get("name") == Some(&serde_json::json!("current profile"))
             && check.get("detail") == Some(&serde_json::json!("saved"))
     }));
+    assert!(json.get("repairs").is_none());
+}
+
+#[test]
+fn ui_doctor_fix_creates_missing_storage() {
+    let env = TestEnv::new();
+    let output = env.run(&["doctor", "--fix"]);
+    assert!(output.contains("Repairs applied:"));
+    assert!(output.contains("Created profiles directory"));
+    assert!(output.contains("Created profiles lock file"));
+    assert!(output.contains("Initialized profiles index"));
+    assert!(env.profiles_dir().is_dir());
+    assert!(env.profiles_dir().join("profiles.lock").is_file());
+    assert!(env.profiles_dir().join("profiles.json").is_file());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = fs::metadata(env.profiles_dir())
+            .expect("profiles dir metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o700);
+    }
+}
+
+#[test]
+fn ui_doctor_fix_prunes_stale_default_profile() {
+    let env = TestEnv::new();
+    seed_profiles(&env);
+    let index_path = env.profiles_dir().join("profiles.json");
+    let mut index = read_json_file(&index_path);
+    index["default_profile_id"] = serde_json::json!("missing-id");
+    fs::write(
+        &index_path,
+        format!(
+            "{}\n",
+            serde_json::to_string_pretty(&index).expect("serialize index")
+        ),
+    )
+    .expect("write stale default index");
+
+    let output = env.run(&["doctor", "--fix"]);
+    assert!(output.contains("Cleared stale default profile"));
+    assert_eq!(default_profile_id(&env), None);
+}
+
+#[test]
+fn ui_doctor_fix_rebuilds_invalid_index() {
+    let env = TestEnv::new();
+    seed_alpha(&env);
+    env.run(&["save", "--label", "alpha"]);
+    fs::write(env.profiles_dir().join("profiles.json"), "{not-json").expect("write broken index");
+
+    let output = env.run(&["doctor", "--fix"]);
+    assert!(output.contains("Backed up invalid profiles index"));
+    assert!(output.contains("Rebuilt invalid profiles index"));
+    assert!(env.profiles_dir().join("profiles.json.bak").is_file());
+
+    let json: serde_json::Value =
+        serde_json::from_str(&env.run(&["list", "--json"])).expect("parse list json");
+    let profiles = json
+        .get("profiles")
+        .and_then(|value| value.as_array())
+        .expect("profiles array");
+    assert!(
+        profiles
+            .iter()
+            .any(|profile| profile.get("id") == Some(&serde_json::json!(ALPHA_ID)))
+    );
+}
+
+#[test]
+fn ui_doctor_fix_rebuilds_invalid_index_without_clobbering_backup() {
+    let env = TestEnv::new();
+    seed_alpha(&env);
+    env.run(&["save", "--label", "alpha"]);
+    fs::write(env.profiles_dir().join("profiles.json"), "{not-json").expect("write broken index");
+    fs::write(env.profiles_dir().join("profiles.json.bak"), "old-backup")
+        .expect("write existing backup");
+
+    let output = env.run(&["doctor", "--fix"]);
+    assert!(output.contains("profiles.json.bak.1"));
+    assert!(env.profiles_dir().join("profiles.json.bak").is_file());
+    assert!(env.profiles_dir().join("profiles.json.bak.1").is_file());
+}
+
+#[test]
+fn ui_doctor_fix_json_reports_repairs() {
+    let env = TestEnv::new();
+    let output = env.run(&["doctor", "--fix", "--json"]);
+    let json: serde_json::Value = serde_json::from_str(&output).expect("parse doctor json");
+    let repairs = json
+        .get("repairs")
+        .and_then(|value| value.as_array())
+        .expect("repairs array");
+    assert!(!repairs.is_empty());
+}
+
+#[test]
+fn ui_doctor_fix_noop_reports_no_repairs() {
+    let env = TestEnv::new();
+    seed_profiles(&env);
+    let output = env.run(&["doctor", "--fix"]);
+    assert!(output.contains("No repairs needed."));
+}
+
+#[test]
+fn ui_doctor_fix_does_not_change_permissions_only_state() {
+    let env = TestEnv::new();
+    seed_profiles(&env);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(env.profiles_dir(), fs::Permissions::from_mode(0o755))
+            .expect("set permissive test mode");
+        env.run(&["doctor", "--fix"]);
+        let mode = fs::metadata(env.profiles_dir())
+            .expect("profiles dir metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o755);
+    }
+}
+
+#[test]
+fn ui_doctor_fix_json_noop_has_empty_repairs() {
+    let env = TestEnv::new();
+    seed_profiles(&env);
+    let output = env.run(&["doctor", "--fix", "--json"]);
+    let json: serde_json::Value = serde_json::from_str(&output).expect("parse doctor json");
+    let repairs = json
+        .get("repairs")
+        .and_then(|value| value.as_array())
+        .expect("repairs array");
+    assert!(repairs.is_empty());
+}
+
+#[test]
+fn ui_doctor_fix_does_not_index_stray_json() {
+    let env = TestEnv::new();
+    fs::create_dir_all(env.profiles_dir()).expect("create profiles dir");
+    fs::write(env.profiles_dir().join("notes.json"), "{\"note\":true}").expect("write stray json");
+
+    env.run(&["doctor", "--fix"]);
+
+    let json = read_json_file(&env.profiles_dir().join("profiles.json"));
+    let profile_count = json.get("profiles").map_or(0, |value| {
+        value
+            .as_array()
+            .map(|entries| entries.len())
+            .or_else(|| value.as_object().map(|entries| entries.len()))
+            .unwrap_or(0)
+    });
+    assert_eq!(profile_count, 0);
+    assert!(env.profiles_dir().join("notes.json").is_file());
+}
+
+#[test]
+fn ui_doctor_fix_json_storage_shape_error() {
+    let env = TestEnv::new();
+    fs::write(env.codex_dir().join("profiles"), "not-a-directory")
+        .expect("write invalid profiles path");
+
+    let output = env.run(&["doctor", "--fix", "--json"]);
+    let json: serde_json::Value = serde_json::from_str(&output).expect("parse doctor json");
+    let checks = json
+        .get("checks")
+        .and_then(|value| value.as_array())
+        .expect("checks array");
+    assert!(checks.iter().any(|check| {
+        check.get("name") == Some(&serde_json::json!("profiles directory"))
+            && check.get("level") == Some(&serde_json::json!("error"))
+    }));
+    assert!(json
+        .get("error")
+        .and_then(|value| value.as_str())
+        .is_some_and(|error| error.contains("profiles directory exists but is not a directory")));
+    let repairs = json
+        .get("repairs")
+        .and_then(|value| value.as_array())
+        .expect("repairs array");
+    assert!(repairs.is_empty());
 }
 
 #[test]

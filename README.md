@@ -98,7 +98,7 @@ rm ~/.local/bin/codex-profiles
 | `codex-profiles list [options]` | List saved profiles. Use `--show-id` or `--json` for alternate output. |
 | `codex-profiles export [options]` | Export saved profiles to a single JSON bundle. |
 | `codex-profiles import [options]` | Import saved profiles from a JSON bundle. |
-| `codex-profiles doctor [--json]` | Run local diagnostics for auth, profile storage, and install state. |
+| `codex-profiles doctor [--fix] [--json]` | Run local diagnostics and optionally apply safe metadata repairs. |
 | `codex-profiles label set [options]` | Add or replace a label on a saved profile. |
 | `codex-profiles label clear [options]` | Remove a label from a saved profile. |
 | `codex-profiles label rename [options]` | Rename an existing label without using set/clear manually. |
@@ -119,6 +119,8 @@ When `load` runs without a selector in a non-interactive session, it uses the sa
 Export bundles contain secrets. Store them securely. `import` fails on id, label, or default-profile conflicts instead of overwriting existing state.
 
 When the exported set includes the current default profile, export/import preserves that default selection too.
+
+`doctor --fix` repairs safe profile-storage metadata only (missing storage files, stale index/default refs, and a rebuild of `profiles.json` from saved profile files when needed). It does not delete invalid saved profile files in this first pass; when it rebuilds a broken `profiles.json`, it writes `profiles.json.bak` (or `profiles.json.bak.N` if a backup already exists), and labels/defaults stored only in the broken index may need to be reconfigured.
 
 > [!WARNING]
 > Deleting a profile does not log you out. It only removes the saved profile file.

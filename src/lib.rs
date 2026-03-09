@@ -76,7 +76,7 @@ fn run(cli: Cli) -> Result<(), String> {
         Commands::List { json, show_id } => list_profiles(&paths, json, show_id),
         Commands::Export { label, id, output } => export_profiles(&paths, label, id, output),
         Commands::Import { input } => import_profiles(&paths, input),
-        Commands::Doctor { json } => doctor(&paths, json),
+        Commands::Doctor { fix, json } => doctor(&paths, fix, json),
         Commands::Label { command } => match command {
             crate::cli::LabelCommands::Set { label, id, to } => {
                 set_profile_label(&paths, label, id, to)

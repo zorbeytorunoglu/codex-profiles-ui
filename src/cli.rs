@@ -67,6 +67,9 @@ pub enum Commands {
     },
     /// Run local diagnostics
     Doctor {
+        /// Apply safe repairs for profile storage metadata
+        #[arg(long)]
+        fix: bool,
         /// Print machine-readable JSON output
         #[arg(long)]
         json: bool,
@@ -193,6 +196,6 @@ pub fn command_with_examples() -> Command {
 
 fn examples_root(name: &str) -> String {
     format!(
-        "Examples:\n  {name} save --label work\n  {name} load --label work\n  {name} load --id mail@example.com-team --force\n  {name} list\n  {name} list --json\n  {name} export --output profiles-export.json\n  {name} import --input profiles-export.json\n  {name} doctor\n  {name} doctor --json\n  {name} label rename --label work --to personal\n  {name} default set --label personal\n  {name} default show\n  {name} status\n  {name} status --label personal\n  {name} status --id mail@example.com-team --json\n  {name} status --json\n  {name} status --all --json\n  {name} delete --label work\n  {name} delete --id mail@example.com-team --yes"
+        "Examples:\n  {name} save --label work\n  {name} load --label work\n  {name} load --id mail@example.com-team --force\n  {name} list\n  {name} list --json\n  {name} export --output profiles-export.json\n  {name} import --input profiles-export.json\n  {name} doctor\n  {name} doctor --json\n  {name} doctor --fix\n  {name} label rename --label work --to personal\n  {name} default set --label personal\n  {name} default show\n  {name} status\n  {name} status --label personal\n  {name} status --id mail@example.com-team --json\n  {name} status --json\n  {name} status --all --json\n  {name} delete --label work\n  {name} delete --id mail@example.com-team --yes"
     )
 }

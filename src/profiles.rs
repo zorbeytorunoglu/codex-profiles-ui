@@ -887,6 +887,113 @@ pub(crate) fn write_profiles_index(paths: &Paths, index: &ProfilesIndex) -> Resu
         .map_err(|err| crate::msg1(PROFILE_ERR_WRITE_INDEX, err))
 }
 
+pub(crate) fn repair_profiles_metadata(paths: &Paths) -> Result<Vec<String>, String> {
+    let _lock = lock_usage(paths)?;
+
+    let had_index = paths.profiles_index.exists();
+    let mut repairs = Vec::new();
+    let mut should_write = false;
+    let mut normalized_index = false;
+    let mut index = if !had_index {
+        should_write = true;
+        repairs.push("Initialized profiles index".to_string());
+        ProfilesIndex::default()
+    } else {
+        let contents = fs::read_to_string(&paths.profiles_index).map_err(|err| {
+            crate::msg2(PROFILE_ERR_READ_INDEX, paths.profiles_index.display(), err)
+        })?;
+        let had_legacy_schema = contents.contains("\"last_used\"")
+            || contents.contains("\"active_profile_id\"")
+            || contents.contains("\"update_cache\"");
+        match serde_json::from_str::<ProfilesIndex>(&contents) {
+            Ok(mut index) => {
+                if index.version < PROFILES_INDEX_VERSION {
+                    index.version = PROFILES_INDEX_VERSION;
+                    normalized_index = true;
+                }
+                if had_legacy_schema {
+                    normalized_index = true;
+                }
+                if normalized_index {
+                    should_write = true;
+                    repairs.push("Normalized profiles index format".to_string());
+                }
+                index
+            }
+            Err(_) => {
+                should_write = true;
+                let backup_path = next_profiles_index_backup_path(&paths.profiles_index);
+                write_atomic(&backup_path, contents.as_bytes())?;
+                repairs.push(format!(
+                    "Backed up invalid profiles index to {}",
+                    backup_path.display()
+                ));
+                repairs.push("Rebuilt invalid profiles index".to_string());
+                ProfilesIndex::default()
+            }
+        }
+    };
+
+    let ids = collect_profile_ids(&paths.profiles)?;
+    let before_entries = index.profiles.len();
+    let had_default = index.default_profile_id.is_some();
+
+    prune_profiles_index(&mut index, &paths.profiles)?;
+    let pruned = before_entries.saturating_sub(index.profiles.len());
+    if pruned > 0 {
+        should_write = true;
+        repairs.push(format!(
+            "Pruned {pruned} stale profile index {}",
+            if pruned == 1 { "entry" } else { "entries" }
+        ));
+    }
+    if had_default && index.default_profile_id.is_none() {
+        should_write = true;
+        repairs.push("Cleared stale default profile".to_string());
+    }
+
+    let mut indexed = 0usize;
+    for id in ids {
+        if index.profiles.contains_key(&id) {
+            continue;
+        }
+        let path = profile_path_for_id(&paths.profiles, &id);
+        match read_tokens(&path) {
+            Ok(tokens) if is_profile_ready(&tokens) => {}
+            _ => continue,
+        }
+        index.profiles.insert(id, ProfileIndexEntry::default());
+        indexed += 1;
+    }
+    if indexed > 0 {
+        should_write = true;
+        repairs.push(format!(
+            "Indexed {indexed} saved {}",
+            if indexed == 1 { "profile" } else { "profiles" }
+        ));
+    }
+
+    if should_write {
+        write_profiles_index(paths, &index)?;
+    }
+    Ok(repairs)
+}
+
+fn next_profiles_index_backup_path(path: &Path) -> PathBuf {
+    let base = path.with_extension("json.bak");
+    if !base.exists() {
+        return base;
+    }
+    let mut idx = 1usize;
+    loop {
+        let candidate = path.with_extension(format!("json.bak.{idx}"));
+        if !candidate.exists() {
+            return candidate;
+        }
+        idx += 1;
+    }
+}
+
 fn prune_profiles_index(index: &mut ProfilesIndex, profiles_dir: &Path) -> Result<(), String> {
     let ids = collect_profile_ids(profiles_dir)?;
     index.profiles.retain(|id, _| ids.contains(id));

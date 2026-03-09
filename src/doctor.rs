@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::fs;
+use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
@@ -7,6 +8,7 @@ use serde::Serialize;
 use crate::{
     InstallSource, Paths, current_saved_id, detect_install_source, is_profile_ready, lock_usage,
     print_output_block, profile_id_from_path, read_auth_file, read_tokens,
+    repair_profiles_metadata,
 };
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -65,6 +67,10 @@ struct DoctorCheckJson {
 struct DoctorJson {
     checks: Vec<DoctorCheckJson>,
     summary: Counts,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    repairs: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
 }
 
 impl Check {
@@ -93,12 +99,27 @@ struct SavedProfilesReport {
     tokens: BTreeMap<String, Result<crate::Tokens, String>>,
 }
 
-pub fn doctor(paths: &Paths, json: bool) -> Result<(), String> {
+pub fn doctor(paths: &Paths, fix: bool, json: bool) -> Result<(), String> {
+    let repairs = if fix {
+        match repair(paths) {
+            Ok(repairs) => Some(repairs),
+            Err(err) => {
+                if json {
+                    let checks = collect_checks(paths);
+                    let counts = summarize_checks(&checks);
+                    return print_doctor_json(checks, counts, Some(Vec::new()), Some(err));
+                }
+                return Err(err);
+            }
+        }
+    } else {
+        None
+    };
     let checks = collect_checks(paths);
     let counts = summarize_checks(&checks);
 
     if json {
-        return print_doctor_json(checks, counts);
+        return print_doctor_json(checks, counts, repairs, None);
     }
 
     let mut lines = vec!["Doctor".to_string(), String::new()];
@@ -112,8 +133,63 @@ pub fn doctor(paths: &Paths, json: bool) -> Result<(), String> {
         "Summary: {} ok, {} warn, {} error, {} info",
         counts.ok, counts.warn, counts.error, counts.info
     ));
+    if let Some(repairs) = repairs {
+        lines.push(String::new());
+        if repairs.is_empty() {
+            lines.push("No repairs needed.".to_string());
+        } else {
+            lines.push("Repairs applied:".to_string());
+            for repair in repairs {
+                lines.push(format!("- {repair}"));
+            }
+        }
+    }
     print_output_block(&lines.join("\n"));
     Ok(())
+}
+
+fn repair(paths: &Paths) -> Result<Vec<String>, String> {
+    let mut repairs = repair_storage(paths)?;
+    repairs.extend(repair_profiles_metadata(paths)?);
+    Ok(repairs)
+}
+
+fn repair_storage(paths: &Paths) -> Result<Vec<String>, String> {
+    let mut repairs = Vec::new();
+
+    if paths.profiles.exists() {
+        if !paths.profiles.is_dir() {
+            return Err("Error: profiles directory exists but is not a directory".to_string());
+        }
+    } else {
+        fs::create_dir_all(&paths.profiles).map_err(|err| err.to_string())?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&paths.profiles, fs::Permissions::from_mode(0o700))
+                .map_err(|err| err.to_string())?;
+        }
+        repairs.push("Created profiles directory".to_string());
+    }
+
+    if paths.profiles_index.exists() && !paths.profiles_index.is_file() {
+        return Err("Error: profiles index exists but is not a file".to_string());
+    }
+
+    if paths.profiles_lock.exists() {
+        if !paths.profiles_lock.is_file() {
+            return Err("Error: profiles lock exists but is not a file".to_string());
+        }
+    } else {
+        OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&paths.profiles_lock)
+            .map_err(|err| err.to_string())?;
+        repairs.push("Created profiles lock file".to_string());
+    }
+
+    Ok(repairs)
 }
 
 fn collect_checks(paths: &Paths) -> Vec<Check> {
@@ -139,7 +215,12 @@ fn summarize_checks(checks: &[Check]) -> Counts {
     counts
 }
 
-fn print_doctor_json(checks: Vec<Check>, summary: Counts) -> Result<(), String> {
+fn print_doctor_json(
+    checks: Vec<Check>,
+    summary: Counts,
+    repairs: Option<Vec<String>>,
+    error: Option<String>,
+) -> Result<(), String> {
     let payload = DoctorJson {
         checks: checks
             .into_iter()
@@ -150,6 +231,8 @@ fn print_doctor_json(checks: Vec<Check>, summary: Counts) -> Result<(), String> 
             })
             .collect(),
         summary,
+        repairs,
+        error,
     };
     let json = serde_json::to_string_pretty(&payload).map_err(|err| err.to_string())?;
     println!("{json}");
@@ -210,7 +293,7 @@ fn inspect_profiles_index(paths: &Paths) -> [Check; 1] {
             Err(err) => Check::new(
                 Level::Error,
                 "profiles index",
-                format!("{err} (fix or remove profiles.json)"),
+                format!("{err} (run `doctor --fix` or remove profiles.json)"),
             ),
         }
     }]
