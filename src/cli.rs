@@ -196,6 +196,19 @@ pub fn command_with_examples() -> Command {
 
 fn examples_root(name: &str) -> String {
     format!(
-        "Common options:\n  --json  Print machine-readable JSON output for commands that support it\n\nExamples:\n  {name} save --label work\n  {name} load --label work\n  {name} list --json\n  {name} status --all --json\n  {name} export --output profiles-export.json\n  {name} import --input profiles-export.json\n  {name} delete --label work --yes\n\nRun `{name} help <command>` for command-specific options."
+        "Output modes:\n  --plain  Disable styling and separators (global option)\n  --json   Print machine-readable output on commands that support it\n\nExamples:\n  {name} save --label work\n  {name} load --label work\n  {name} list --json\n  {name} status --all --json\n  {name} export --output profiles-export.json\n  {name} import --input profiles-export.json\n  {name} delete --label work --yes\n\nRun `{name} help <command>` to see command-specific options and `--json` support."
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::examples_root;
+
+    #[test]
+    fn examples_root_uses_clear_professional_headings() {
+        let text = examples_root("codex-profiles");
+        assert!(text.contains("Output modes:"));
+        assert!(text.contains("Examples:"));
+        assert!(!text.contains("Common options:"));
+    }
 }
