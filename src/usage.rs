@@ -1,17 +1,14 @@
-use chrono::{DateTime, Local, Utc};
+use chrono::{DateTime, Local, TimeZone, Utc};
 use colored::Colorize;
 use fslock::LockFile;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::{
-    AUTH_RELOGIN_AND_SAVE, Paths, UI_ERROR_TWO_LINE, UI_INFO_PREFIX, USAGE_ERR_ACCESS_DENIED_403,
-    USAGE_ERR_INVALID_RESPONSE, USAGE_ERR_LOCK_ACQUIRE, USAGE_ERR_LOCK_HELD, USAGE_ERR_LOCK_OPEN,
-    USAGE_ERR_RATE_LIMITED_429, USAGE_ERR_REQUEST_FAILED_CODE, USAGE_ERR_SERVICE_UNREACHABLE,
-    USAGE_ERR_UNAUTHORIZED_401_TITLE, USAGE_UNAVAILABLE_402_DETAIL, USAGE_UNAVAILABLE_402_TITLE,
-    USAGE_UNAVAILABLE_DEFAULT, command_name,
+    Paths, UI_INFO_PREFIX, USAGE_ERR_INVALID_RESPONSE, USAGE_ERR_LOCK_ACQUIRE, USAGE_ERR_LOCK_HELD,
+    USAGE_ERR_LOCK_OPEN, USAGE_ERR_SERVICE_UNREACHABLE, USAGE_UNAVAILABLE_DEFAULT, command_name,
 };
 use crate::{is_plain, style_text, use_color_stdout};
 
@@ -49,9 +46,23 @@ pub(crate) struct UsageWindow {
     pub(crate) reset_at: i64,
 }
 
+#[derive(Clone, Serialize)]
+pub(crate) struct UsageSnapshotWindow {
+    pub(crate) left_percent: i64,
+    pub(crate) reset_at: i64,
+}
+
+#[derive(Clone, Serialize)]
+pub(crate) struct UsageSnapshotBucket {
+    pub(crate) id: String,
+    pub(crate) label: String,
+    pub(crate) five_hour: Option<UsageSnapshotWindow>,
+    pub(crate) weekly: Option<UsageSnapshotWindow>,
+}
+
 #[derive(Debug)]
 pub enum UsageFetchError {
-    Status(u16),
+    Http(Box<crate::UnexpectedHttpError>),
     Transport(String),
     Parse(String),
 }
@@ -59,26 +70,22 @@ pub enum UsageFetchError {
 impl UsageFetchError {
     pub fn status_code(&self) -> Option<u16> {
         match self {
-            UsageFetchError::Status(code) => Some(*code),
+            UsageFetchError::Http(err) => Some(err.status_code()),
             _ => None,
         }
     }
 
     pub fn message(&self) -> String {
         match self {
-            UsageFetchError::Status(401) => crate::msg2(
-                UI_ERROR_TWO_LINE,
-                USAGE_ERR_UNAUTHORIZED_401_TITLE,
-                AUTH_RELOGIN_AND_SAVE,
-            ),
-            UsageFetchError::Status(402) => crate::msg2(
-                UI_ERROR_TWO_LINE,
-                USAGE_UNAVAILABLE_402_TITLE,
-                USAGE_UNAVAILABLE_402_DETAIL,
-            ),
-            UsageFetchError::Status(403) => USAGE_ERR_ACCESS_DENIED_403.to_string(),
-            UsageFetchError::Status(429) => USAGE_ERR_RATE_LIMITED_429.to_string(),
-            UsageFetchError::Status(code) => crate::msg1(USAGE_ERR_REQUEST_FAILED_CODE, code),
+            UsageFetchError::Http(err) => err.to_string(),
+            UsageFetchError::Transport(err) => crate::msg1(USAGE_ERR_SERVICE_UNREACHABLE, err),
+            UsageFetchError::Parse(err) => crate::msg1(USAGE_ERR_INVALID_RESPONSE, err),
+        }
+    }
+
+    pub fn plain_message(&self) -> String {
+        match self {
+            UsageFetchError::Http(err) => err.plain_message(),
             UsageFetchError::Transport(err) => crate::msg1(USAGE_ERR_SERVICE_UNREACHABLE, err),
             UsageFetchError::Parse(err) => crate::msg1(USAGE_ERR_INVALID_RESPONSE, err),
         }
@@ -131,20 +138,19 @@ struct UsageBucket {
     rate_limit: Option<RateLimitDetails>,
 }
 
-pub fn read_base_url(paths: &Paths) -> String {
+pub fn read_base_url(paths: &Paths) -> Result<String, String> {
     let config_path = paths.codex.join("config.toml");
     if let Ok(contents) = fs::read_to_string(config_path) {
         for line in contents.lines() {
             if let Some(value) = parse_config_value(line, "chatgpt_base_url") {
-                return normalize_base_url(&value);
+                return validate_base_url(&value);
             }
         }
     }
-    DEFAULT_BASE_URL.to_string()
+    Ok(DEFAULT_BASE_URL.to_string())
 }
 
-#[doc(hidden)]
-pub fn parse_config_value(line: &str, key: &str) -> Option<String> {
+fn parse_config_value(line: &str, key: &str) -> Option<String> {
     let line = line.trim();
     if line.is_empty() || line.starts_with('#') {
         return None;
@@ -185,12 +191,70 @@ fn strip_inline_comment(value: &str) -> &str {
 
 fn normalize_base_url(value: &str) -> String {
     let mut base = value.trim_end_matches('/').to_string();
-    if (base.starts_with("https://chatgpt.com") || base.starts_with("https://chat.openai.com"))
+    if let Some((scheme, host)) = parsed_url_scheme_and_host(&base)
+        && scheme == "https"
+        && matches!(host.as_str(), "chatgpt.com" | "chat.openai.com")
         && !base.contains("/backend-api")
     {
         base = format!("{base}/backend-api");
     }
     base
+}
+
+fn validate_base_url(value: &str) -> Result<String, String> {
+    let base = normalize_base_url(value);
+    if is_allowed_base_url(&base) {
+        return Ok(base);
+    }
+    Err(format!(
+        "Unsupported chatgpt_base_url `{base}`. Use an official ChatGPT host or a loopback address."
+    ))
+}
+
+fn is_allowed_base_url(base_url: &str) -> bool {
+    let Some((scheme, host)) = parsed_url_scheme_and_host(base_url) else {
+        return false;
+    };
+    if is_loopback_host(&host) {
+        return matches!(scheme.as_str(), "http" | "https");
+    }
+    scheme == "https" && matches!(host.as_str(), "chatgpt.com" | "chat.openai.com")
+}
+
+fn parsed_url_scheme_and_host(base_url: &str) -> Option<(String, String)> {
+    let (scheme, rest) = base_url
+        .split_once("://")
+        .map(|(scheme, rest)| (scheme.to_ascii_lowercase(), rest))?;
+    let authority = rest.split('/').next().unwrap_or(rest);
+    if authority.is_empty() || authority.contains('@') {
+        return None;
+    }
+
+    let host = if authority.starts_with('[') {
+        authority
+            .trim_start_matches('[')
+            .split(']')
+            .next()
+            .unwrap_or(authority)
+            .to_ascii_lowercase()
+    } else {
+        authority
+            .split(':')
+            .next()
+            .unwrap_or(authority)
+            .trim_end_matches('.')
+            .to_ascii_lowercase()
+    };
+
+    if host.is_empty() {
+        return None;
+    }
+
+    Some((scheme, host))
+}
+
+fn is_loopback_host(host: &str) -> bool {
+    matches!(host, "localhost" | "127.0.0.1" | "::1")
 }
 
 fn usage_endpoint(base_url: &str) -> String {
@@ -213,15 +277,26 @@ fn fetch_usage_payload(
         .build();
     let agent: ureq::Agent = config.into();
     for attempt in 0..USAGE_RETRY_ATTEMPTS {
-        let response = agent
+        let response = match agent
             .get(&endpoint)
             .header("Authorization", &format!("Bearer {access_token}"))
             .header("ChatGPT-Account-Id", account_id)
             .header("User-Agent", USER_AGENT)
             .call()
-            .map_err(|err| UsageFetchError::Transport(err.to_string()))?;
+        {
+            Ok(response) => response,
+            Err(err) => {
+                if usage_should_retry_transport_error(&err)
+                    && let Some(delay) = usage_retry_delay(attempt, None)
+                {
+                    thread::sleep(delay);
+                    continue;
+                }
+                return Err(UsageFetchError::Transport(err.to_string()));
+            }
+        };
         let status = response.status();
-        if status == 429 {
+        if usage_should_retry_status(status.as_u16()) {
             let retry_after = response
                 .headers()
                 .get("Retry-After")
@@ -232,14 +307,30 @@ fn fetch_usage_payload(
             }
         }
         if !status.is_success() {
-            return Err(UsageFetchError::Status(status.as_u16()));
+            return Err(UsageFetchError::Http(Box::new(
+                crate::UnexpectedHttpError::from_ureq_response(response, Some(&endpoint)),
+            )));
         }
         return response
             .into_body()
             .read_json::<UsagePayload>()
             .map_err(|err| UsageFetchError::Parse(err.to_string()));
     }
-    Err(UsageFetchError::Status(429))
+    unreachable!("usage retry loop should always return or continue")
+}
+
+fn usage_should_retry_status(status: u16) -> bool {
+    status == 429 || (500..=599).contains(&status)
+}
+
+fn usage_should_retry_transport_error(err: &ureq::Error) -> bool {
+    matches!(
+        err,
+        ureq::Error::Timeout(_)
+            | ureq::Error::Io(_)
+            | ureq::Error::HostNotFound
+            | ureq::Error::ConnectionFailed
+    )
 }
 
 fn usage_retry_delay(attempt: usize, retry_after: Option<&str>) -> Option<Duration> {
@@ -285,15 +376,18 @@ fn parse_retry_after(value: &str) -> Option<Duration> {
     Some(Duration::from_secs((retry_at - now) as u64))
 }
 
-pub fn fetch_usage_details(
+pub(crate) fn fetch_usage_status(
     base_url: &str,
     access_token: &str,
     account_id: &str,
     unavailable_text: &str,
     now: DateTime<Local>,
-) -> Result<Vec<String>, UsageFetchError> {
+) -> Result<(Vec<String>, Vec<UsageSnapshotBucket>), UsageFetchError> {
     let payload = fetch_usage_payload(base_url, access_token, account_id)?;
-    Ok(usage_lines_from_payload(&payload, unavailable_text, now))
+    Ok((
+        usage_lines_from_payload(&payload, unavailable_text, now),
+        usage_snapshot_from_payload(&payload),
+    ))
 }
 
 #[cfg(test)]
@@ -440,6 +534,34 @@ fn build_usage_limits_for_rate_limit(rate_limit: Option<&RateLimitDetails>) -> U
     limits
 }
 
+fn usage_snapshot_from_payload(payload: &UsagePayload) -> Vec<UsageSnapshotBucket> {
+    ordered_usage_buckets(usage_buckets(payload))
+        .into_iter()
+        .filter_map(|bucket| {
+            let limits = build_usage_limits_for_rate_limit(bucket.rate_limit.as_ref());
+            let five_hour = limits.five_hour.as_ref().map(usage_snapshot_window);
+            let weekly = limits.weekly.as_ref().map(usage_snapshot_window);
+            if five_hour.is_none() && weekly.is_none() {
+                return None;
+            }
+            let label = usage_bucket_label(&bucket).to_string();
+            Some(UsageSnapshotBucket {
+                id: bucket.limit_id,
+                label,
+                five_hour,
+                weekly,
+            })
+        })
+        .collect()
+}
+
+fn usage_snapshot_window(window: &UsageWindow) -> UsageSnapshotWindow {
+    UsageSnapshotWindow {
+        left_percent: window.left_percent.round() as i64,
+        reset_at: window.reset_at,
+    }
+}
+
 fn usage_window_output(window: &RateLimitWindowSnapshot) -> UsageWindow {
     let left_percent = (100.0 - window.used_percent).clamp(0.0, 100.0);
     let reset_at = window.reset_at;
@@ -566,7 +688,7 @@ fn format_usage_line(line: &UsageLine, dim: bool, use_color: bool) -> String {
         format!(" {resets}")
     };
     let bar = if dim {
-        strip_ansi(&line.bar)
+        crate::ui::strip_ansi(&line.bar)
     } else {
         line.bar.clone()
     };
@@ -622,39 +744,8 @@ fn style_usage_bar(bar: &str, left_percent: f64) -> String {
     }
 }
 
-fn strip_ansi(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    let mut chars = input.chars().peekable();
-    loop {
-        let Some(ch) = chars.next() else {
-            break;
-        };
-        if ch == '\x1b' && consume_ansi_escape(&mut chars) {
-            continue;
-        }
-        out.push(ch);
-    }
-    out
-}
-
-fn consume_ansi_escape<I>(chars: &mut std::iter::Peekable<I>) -> bool
-where
-    I: Iterator<Item = char>,
-{
-    if chars.peek() != Some(&'[') {
-        return false;
-    }
-    chars.next();
-    for c in chars.by_ref() {
-        if c == 'm' {
-            break;
-        }
-    }
-    true
-}
-
 fn local_from_timestamp(ts: i64) -> Option<DateTime<Local>> {
-    let dt = chrono::DateTime::<chrono::Utc>::from_timestamp(ts, 0)?;
+    let dt = chrono::Utc.timestamp_opt(ts, 0).single()?;
     Some(dt.with_timezone(&Local))
 }
 
@@ -716,9 +807,38 @@ mod tests {
         http_ok_response, make_paths, set_env_guard, set_plain_guard, spawn_server,
     };
     use std::fs;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
     use std::sync::Mutex;
+    use std::thread;
 
     static LOCK_TEST_MUTEX: Mutex<()> = Mutex::new(());
+
+    enum TestServerStep {
+        Close,
+        Respond(String),
+    }
+
+    fn spawn_server_sequence(steps: Vec<TestServerStep>) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        thread::spawn(move || {
+            for step in steps {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    break;
+                };
+                let mut buf = [0_u8; 4096];
+                let _ = stream.read(&mut buf);
+                match step {
+                    TestServerStep::Close => {}
+                    TestServerStep::Respond(response) => {
+                        let _ = stream.write_all(response.as_bytes());
+                    }
+                }
+            }
+        });
+        format!("http://{addr}")
+    }
 
     #[test]
     fn config_parsing_paths() {
@@ -729,6 +849,24 @@ mod tests {
         assert_eq!(
             parse_config_value("key = 'value'", "key"),
             Some("value".to_string())
+        );
+        assert_eq!(
+            parse_config_value(
+                r#"chatgpt_base_url = "https://chatgpt.com/backend-api" # comment"#,
+                "chatgpt_base_url"
+            ),
+            Some("https://chatgpt.com/backend-api".to_string())
+        );
+        assert_eq!(
+            parse_config_value(
+                r#"chatgpt_base_url = "https://example.com/#/foo" # tail"#,
+                "chatgpt_base_url"
+            ),
+            Some("https://example.com/#/foo".to_string())
+        );
+        assert!(parse_config_value("other = \"value\"", "chatgpt_base_url").is_none());
+        assert!(
+            parse_config_value("chatgpt_base_url = '' # comment", "chatgpt_base_url").is_none()
         );
         assert_eq!(strip_inline_comment("value # comment"), "value");
     }
@@ -742,6 +880,65 @@ mod tests {
     }
 
     #[test]
+    fn read_base_url_rejects_unsafe_remote_hosts() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = make_paths(dir.path());
+        fs::create_dir_all(&paths.codex).unwrap();
+        fs::write(
+            paths.codex.join("config.toml"),
+            "chatgpt_base_url = \"http://example.com\"\n",
+        )
+        .unwrap();
+
+        let err = read_base_url(&paths).unwrap_err();
+
+        assert!(err.contains("Unsupported chatgpt_base_url"));
+    }
+
+    #[test]
+    fn read_base_url_rejects_spoofed_official_hosts() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = make_paths(dir.path());
+        fs::create_dir_all(&paths.codex).unwrap();
+
+        for value in [
+            "https://chatgpt.com.evil.test",
+            "https://chatgpt.com@evil.test",
+        ] {
+            fs::write(
+                paths.codex.join("config.toml"),
+                format!("chatgpt_base_url = \"{value}\"\n"),
+            )
+            .unwrap();
+
+            let err = read_base_url(&paths).unwrap_err();
+            assert!(err.contains("Unsupported chatgpt_base_url"));
+        }
+    }
+
+    #[test]
+    fn read_base_url_allows_loopback_hosts() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = make_paths(dir.path());
+        fs::create_dir_all(&paths.codex).unwrap();
+        for value in [
+            "http://127.0.0.1:8765",
+            "http://localhost:8765",
+            "http://[::1]:8765",
+        ] {
+            fs::write(
+                paths.codex.join("config.toml"),
+                format!("chatgpt_base_url = \"{value}\"\n"),
+            )
+            .unwrap();
+
+            let base_url = read_base_url(&paths).unwrap();
+
+            assert_eq!(base_url, value);
+        }
+    }
+
+    #[test]
     fn fetch_usage_payload_paths() {
         let payload = r#"{"rate_limit":{"primary_window":{"used_percent":50.0,"limit_window_seconds":3600,"reset_at":1}}}"#;
         let resp = http_ok_response(payload, "application/json");
@@ -749,12 +946,34 @@ mod tests {
         let base_url = format!("{url}/backend-api");
         fetch_usage_payload(&base_url, "token", "acct").unwrap();
 
-        let err_resp =
-            "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n".to_string();
-        let err_url = spawn_server(err_resp);
+        let err_body = "server exploded";
+        let err_resp = format!(
+            "HTTP/1.1 500 Internal Server Error\r\nContent-Length: {}\r\n\r\n{}",
+            err_body.len(),
+            err_body
+        );
+        let err_steps = (0..USAGE_RETRY_ATTEMPTS)
+            .map(|_| TestServerStep::Respond(err_resp.clone()))
+            .collect();
+        let err_url = spawn_server_sequence(err_steps);
         let base_url = format!("{err_url}/backend-api");
         let err = fetch_usage_payload(&base_url, "token", "acct").unwrap_err();
-        assert!(matches!(err, UsageFetchError::Status(_)));
+        assert!(matches!(err, UsageFetchError::Http(_)));
+        assert!(
+            err.message()
+                .contains("unexpected status 500 Internal Server Error: server exploded")
+        );
+
+        let code_body = r#"{"detail":{"code":"deactivated_workspace"}}"#;
+        let code_resp = format!(
+            "HTTP/1.1 402 Payment Required\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            code_body.len(),
+            code_body
+        );
+        let code_url = spawn_server(code_resp);
+        let base_url = format!("{code_url}/backend-api");
+        let err = fetch_usage_payload(&base_url, "token", "acct").unwrap_err();
+        assert!(err.message().contains("unexpected status 402 Payment Required: {\"detail\":{\"code\":\"deactivated_workspace\"}}"));
 
         let bad_resp =
             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 1\r\n\r\n{"
@@ -766,14 +985,61 @@ mod tests {
     }
 
     #[test]
+    fn fetch_usage_payload_retries_http_5xx_before_success() {
+        let ok_payload = r#"{"rate_limit":{"primary_window":{"used_percent":50.0,"limit_window_seconds":3600,"reset_at":1}}}"#;
+        let ok_response = http_ok_response(ok_payload, "application/json");
+        let error_body = "temporary failure";
+        let error_response = format!(
+            "HTTP/1.1 500 Internal Server Error\r\nContent-Length: {}\r\n\r\n{}",
+            error_body.len(),
+            error_body
+        );
+        let url = spawn_server_sequence(vec![
+            TestServerStep::Respond(error_response),
+            TestServerStep::Respond(ok_response),
+        ]);
+        let base_url = format!("{url}/backend-api");
+
+        let payload = fetch_usage_payload(&base_url, "token", "acct").unwrap();
+        assert!(payload.rate_limit.is_some());
+    }
+
+    #[test]
+    fn fetch_usage_payload_retries_transport_errors_before_success() {
+        let ok_payload = r#"{"rate_limit":{"primary_window":{"used_percent":50.0,"limit_window_seconds":3600,"reset_at":1}}}"#;
+        let ok_response = http_ok_response(ok_payload, "application/json");
+        let url = spawn_server_sequence(vec![
+            TestServerStep::Close,
+            TestServerStep::Respond(ok_response),
+        ]);
+        let base_url = format!("{url}/backend-api");
+
+        let payload = fetch_usage_payload(&base_url, "token", "acct").unwrap();
+        assert!(payload.rate_limit.is_some());
+    }
+
+    #[test]
+    fn fetch_usage_payload_returns_transport_error_after_retry_budget() {
+        let steps = (0..USAGE_RETRY_ATTEMPTS)
+            .map(|_| TestServerStep::Close)
+            .collect();
+        let url = spawn_server_sequence(steps);
+        let base_url = format!("{url}/backend-api");
+
+        let err = fetch_usage_payload(&base_url, "token", "acct").unwrap_err();
+        assert!(matches!(err, UsageFetchError::Transport(_)));
+    }
+
+    #[test]
     fn fetch_usage_details_paths() {
         let payload = r#"{"rate_limit":{"primary_window":{"used_percent":10.0,"limit_window_seconds":3600,"reset_at":1}}}"#;
         let resp = http_ok_response(payload, "application/json");
         let url = spawn_server(resp);
         let base_url = format!("{url}/backend-api");
-        let lines =
-            fetch_usage_details(&base_url, "token", "acct", "unavailable", Local::now()).unwrap();
+        let (lines, buckets) =
+            fetch_usage_status(&base_url, "token", "acct", "unavailable", Local::now()).unwrap();
         assert!(!lines.is_empty());
+        assert!(!buckets.is_empty());
     }
 
     #[test]
@@ -937,7 +1203,7 @@ mod tests {
         let bar = render_bar(10.0);
         let styled = style_usage_bar(&bar, 10.0);
         assert_eq!(bar, styled);
-        let stripped = strip_ansi("\x1b[31mred\x1b[0m");
+        let stripped = crate::ui::strip_ansi("\x1b[31mred\x1b[0m");
         assert_eq!(stripped, "red");
     }
 

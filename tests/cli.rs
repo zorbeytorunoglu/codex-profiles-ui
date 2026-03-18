@@ -103,6 +103,15 @@ impl TestEnv {
         let path = self.codex_dir().join("auth.json");
         fs::write(path, serde_json::to_string(&value).expect("serialize auth"))
             .expect("write auth.json");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(
+                self.codex_dir().join("auth.json"),
+                fs::Permissions::from_mode(0o600),
+            )
+            .expect("chmod auth.json");
+        }
     }
 
     fn write_auth(&self, account_id: &str, email: &str, plan: &str, access_token: &str) {
@@ -263,15 +272,6 @@ fn profile_label(env: &TestEnv, id: &str) -> Option<String> {
     json.get("profiles")
         .and_then(|profiles| profiles.get(id))
         .and_then(|entry| entry.get("label"))
-        .and_then(|value| value.as_str())
-        .map(str::to_string)
-}
-
-fn default_profile_id(env: &TestEnv) -> Option<String> {
-    let index_path = env.profiles_dir().join("profiles.json");
-    let index = fs::read_to_string(index_path).expect("read profiles.json");
-    let json: serde_json::Value = serde_json::from_str(&index).expect("parse profiles.json");
-    json.get("default_profile_id")
         .and_then(|value| value.as_str())
         .map(str::to_string)
 }
@@ -495,6 +495,35 @@ fn ui_save_command() {
     assert!(profile_path.is_file());
 }
 
+#[cfg(unix)]
+#[test]
+fn ui_save_command_writes_private_files() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let env = TestEnv::new();
+    seed_alpha(&env);
+    fs::set_permissions(
+        env.codex_dir().join("auth.json"),
+        fs::Permissions::from_mode(0o644),
+    )
+    .expect("set permissive auth mode");
+
+    env.run(&["save", "--label", "alpha"]);
+
+    let profile_mode = fs::metadata(env.profiles_dir().join(format!("{ALPHA_ID}.json")))
+        .expect("profile metadata")
+        .permissions()
+        .mode()
+        & 0o777;
+    let index_mode = fs::metadata(env.profiles_dir().join("profiles.json"))
+        .expect("index metadata")
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(profile_mode, 0o600);
+    assert_eq!(index_mode, 0o600);
+}
+
 #[test]
 fn ui_save_missing_auth() {
     let env = TestEnv::new();
@@ -637,52 +666,36 @@ fn ui_label_rename_command() {
 }
 
 #[test]
-fn ui_default_set_show_clear_command() {
+fn ui_default_command_is_unrecognized() {
     let env = TestEnv::new();
-    seed_profiles(&env);
-    let output = env.run(&["default", "set", "--label", "beta"]);
-    assert!(output.contains("Set default profile"));
-    assert_eq!(default_profile_id(&env), Some(BETA_ID.to_string()));
-
-    let output = env.run(&["default", "show"]);
-    assert!(output.contains("Default profile"));
-    assert!(output.contains(BETA_ID));
-
-    let output = env.run(&["default", "clear"]);
-    assert!(output.contains("Cleared default profile"));
-    assert_eq!(default_profile_id(&env), None);
-
-    let output = env.run(&["default", "show"]);
-    assert!(output.contains("No default profile set"));
+    let err = env.run_expect_error(&["default", "show"]);
+    assert!(err.contains("unrecognized subcommand 'default'"));
 }
 
 #[test]
-fn ui_delete_default_profile_clears_default() {
+fn ui_load_ignores_legacy_default_when_notty() {
     let env = TestEnv::new();
     seed_profiles(&env);
-    env.run(&["default", "set", "--label", "beta"]);
-    env.run(&["delete", "--label", "beta", "--yes"]);
-    assert_eq!(default_profile_id(&env), None);
-}
+    let index_path = env.profiles_dir().join("profiles.json");
+    let mut index = read_json_file(&index_path);
+    index["default_profile_id"] = serde_json::json!(BETA_ID);
+    fs::write(
+        &index_path,
+        format!(
+            "{}\n",
+            serde_json::to_string_pretty(&index).expect("serialize legacy index")
+        ),
+    )
+    .expect("write legacy index");
 
-#[test]
-fn ui_load_uses_default_when_notty() {
-    let env = TestEnv::new();
-    seed_profiles(&env);
-    env.run(&["default", "set", "--id", BETA_ID]);
-    seed_alpha(&env);
-
-    let output = env.run(&["load"]);
-    assert!(output.contains("Loaded profile"));
-    assert!(output.contains(BETA_EMAIL));
-    assert!(env.read_auth().contains(BETA_ACCOUNT));
+    let err = env.run_expect_error(&["load"]);
+    assert!(err.contains("load selection requires a TTY"));
 }
 
 #[test]
 fn ui_export_all_profiles_command() {
     let env = TestEnv::new();
     seed_profiles(&env);
-    env.run(&["default", "set", "--label", "beta"]);
     let export_path = env.home_path().join("profiles-export.json");
     let output = env.run(&["export", "--output", export_path.to_str().unwrap()]);
     assert!(output.contains("Exported 2 profiles"));
@@ -693,10 +706,7 @@ fn ui_export_all_profiles_command() {
         .and_then(|value| value.as_array())
         .expect("profiles array");
     assert_eq!(json.get("version").unwrap(), &serde_json::json!(1));
-    assert_eq!(
-        json.get("default_profile_id").unwrap(),
-        &serde_json::json!(BETA_ID)
-    );
+    assert!(json.get("default_profile_id").is_none());
     assert_eq!(profiles.len(), 2);
     assert!(profiles.iter().any(|profile| {
         profile.get("id") == Some(&serde_json::json!(ALPHA_ID))
@@ -706,6 +716,17 @@ fn ui_export_all_profiles_command() {
         profile.get("id") == Some(&serde_json::json!(BETA_ID))
             && profile.get("label") == Some(&serde_json::json!("beta"))
     }));
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = fs::metadata(&export_path)
+            .expect("export metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600);
+    }
 }
 
 #[test]
@@ -735,7 +756,6 @@ fn ui_export_selected_id_command() {
 fn ui_export_selected_label_command() {
     let env = TestEnv::new();
     seed_profiles(&env);
-    env.run(&["default", "set", "--label", "alpha"]);
     let export_path = env.home_path().join("profiles-export-beta.json");
     let output = env.run(&[
         "export",
@@ -752,10 +772,7 @@ fn ui_export_selected_label_command() {
         .and_then(|value| value.as_array())
         .expect("profiles array");
     assert_eq!(profiles.len(), 1);
-    assert_eq!(
-        json.get("default_profile_id").unwrap(),
-        &serde_json::Value::Null
-    );
+    assert!(json.get("default_profile_id").is_none());
     assert_eq!(profiles[0].get("id").unwrap(), &serde_json::json!(BETA_ID));
     assert_eq!(
         profiles[0].get("label").unwrap(),
@@ -767,14 +784,14 @@ fn ui_export_selected_label_command() {
 fn ui_import_profiles_command() {
     let src = TestEnv::new();
     seed_profiles(&src);
-    src.run(&["default", "set", "--label", "beta"]);
     let export_path = src.home_path().join("profiles-export.json");
     src.run(&["export", "--output", export_path.to_str().unwrap()]);
 
     let dest = TestEnv::new();
     let output = dest.run(&["import", "--input", export_path.to_str().unwrap()]);
     assert!(output.contains("Imported 2 profiles"));
-    assert_eq!(default_profile_id(&dest), Some(BETA_ID.to_string()));
+    let index = read_json_file(&dest.profiles_dir().join("profiles.json"));
+    assert!(index.get("default_profile_id").is_none());
 
     let json: serde_json::Value =
         serde_json::from_str(&dest.run(&["list", "--json"])).expect("parse list json");
@@ -801,6 +818,20 @@ fn ui_import_profiles_command() {
         profile.get("id") == Some(&serde_json::json!(BETA_ID))
             && profile.get("label") == Some(&serde_json::json!("beta"))
     }));
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        for id in [ALPHA_ID, BETA_ID] {
+            let path = dest.profiles_dir().join(format!("{id}.json"));
+            let mode = fs::metadata(path)
+                .expect("profile metadata")
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+    }
 }
 
 #[test]
@@ -863,28 +894,9 @@ fn ui_import_rejects_existing_label_conflict() {
 }
 
 #[test]
-fn ui_import_rejects_existing_default_conflict() {
-    let src = TestEnv::new();
-    seed_profiles(&src);
-    src.run(&["default", "set", "--label", "beta"]);
-    let export_path = src.home_path().join("profiles-export.json");
-    src.run(&["export", "--output", export_path.to_str().unwrap()]);
-
-    let dest = TestEnv::new();
-    seed_alpha(&dest);
-    dest.run(&["save", "--label", "alpha"]);
-    dest.run(&["default", "set", "--label", "alpha"]);
-    let err = dest.run_expect_error(&["import", "--input", export_path.to_str().unwrap()]);
-    assert!(err.contains(ALPHA_ID));
-    assert!(err.contains("Clear it before importing a different default"));
-    assert_eq!(default_profile_id(&dest), Some(ALPHA_ID.to_string()));
-}
-
-#[test]
 fn ui_import_legacy_bundle_without_default_field() {
     let src = TestEnv::new();
     seed_profiles(&src);
-    src.run(&["default", "set", "--label", "beta"]);
     let export_path = src.home_path().join("profiles-export.json");
     src.run(&["export", "--output", export_path.to_str().unwrap()]);
 
@@ -904,7 +916,8 @@ fn ui_import_legacy_bundle_without_default_field() {
     let dest = TestEnv::new();
     let output = dest.run(&["import", "--input", export_path.to_str().unwrap()]);
     assert!(output.contains("Imported 2 profiles"));
-    assert_eq!(default_profile_id(&dest), None);
+    let index = read_json_file(&dest.profiles_dir().join("profiles.json"));
+    assert!(index.get("default_profile_id").is_none());
 }
 
 #[test]
@@ -1118,27 +1131,6 @@ fn ui_doctor_fix_creates_missing_storage() {
 }
 
 #[test]
-fn ui_doctor_fix_prunes_stale_default_profile() {
-    let env = TestEnv::new();
-    seed_profiles(&env);
-    let index_path = env.profiles_dir().join("profiles.json");
-    let mut index = read_json_file(&index_path);
-    index["default_profile_id"] = serde_json::json!("missing-id");
-    fs::write(
-        &index_path,
-        format!(
-            "{}\n",
-            serde_json::to_string_pretty(&index).expect("serialize index")
-        ),
-    )
-    .expect("write stale default index");
-
-    let output = env.run(&["doctor", "--fix"]);
-    assert!(output.contains("Cleared stale default profile"));
-    assert_eq!(default_profile_id(&env), None);
-}
-
-#[test]
 fn ui_doctor_fix_rebuilds_invalid_index() {
     let env = TestEnv::new();
     seed_alpha(&env);
@@ -1199,7 +1191,43 @@ fn ui_doctor_fix_noop_reports_no_repairs() {
 }
 
 #[test]
-fn ui_doctor_fix_does_not_change_permissions_only_state() {
+fn ui_doctor_warns_on_permissive_permissions() {
+    let env = TestEnv::new();
+    seed_profiles(&env);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        fs::set_permissions(env.profiles_dir(), fs::Permissions::from_mode(0o755))
+            .expect("set permissive test mode");
+        fs::set_permissions(
+            env.profiles_dir().join("profiles.json"),
+            fs::Permissions::from_mode(0o644),
+        )
+        .expect("set permissive index mode");
+        fs::set_permissions(
+            env.profiles_dir().join("profiles.lock"),
+            fs::Permissions::from_mode(0o644),
+        )
+        .expect("set permissive lock mode");
+        fs::set_permissions(
+            env.codex_dir().join("auth.json"),
+            fs::Permissions::from_mode(0o644),
+        )
+        .expect("set permissive auth mode");
+
+        let output = env.run(&["doctor"]);
+
+        assert!(output.contains("[warn] auth file:"));
+        assert!(output.contains("[warn] profiles directory:"));
+        assert!(output.contains("[warn] profiles index:"));
+        assert!(output.contains("[warn] profiles lock:"));
+        assert!(output.contains("doctor --fix"));
+    }
+}
+
+#[test]
+fn ui_doctor_fix_repairs_existing_permissions() {
     let env = TestEnv::new();
     seed_profiles(&env);
     #[cfg(unix)]
@@ -1207,13 +1235,49 @@ fn ui_doctor_fix_does_not_change_permissions_only_state() {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(env.profiles_dir(), fs::Permissions::from_mode(0o755))
             .expect("set permissive test mode");
+        fs::set_permissions(
+            env.profiles_dir().join("profiles.json"),
+            fs::Permissions::from_mode(0o644),
+        )
+        .expect("set permissive index mode");
+        fs::set_permissions(
+            env.profiles_dir().join(format!("{ALPHA_ID}.json")),
+            fs::Permissions::from_mode(0o644),
+        )
+        .expect("set permissive profile mode");
+        fs::set_permissions(
+            env.profiles_dir().join("profiles.lock"),
+            fs::Permissions::from_mode(0o644),
+        )
+        .expect("set permissive lock mode");
+        fs::set_permissions(
+            env.codex_dir().join("auth.json"),
+            fs::Permissions::from_mode(0o644),
+        )
+        .expect("set permissive auth mode");
+
         env.run(&["doctor", "--fix"]);
-        let mode = fs::metadata(env.profiles_dir())
+
+        let dir_mode = fs::metadata(env.profiles_dir())
             .expect("profiles dir metadata")
             .permissions()
             .mode()
             & 0o777;
-        assert_eq!(mode, 0o755);
+        assert_eq!(dir_mode, 0o700);
+
+        for file in [
+            env.codex_dir().join("auth.json"),
+            env.profiles_dir().join("profiles.json"),
+            env.profiles_dir().join(format!("{ALPHA_ID}.json")),
+            env.profiles_dir().join("profiles.lock"),
+        ] {
+            let mode = fs::metadata(file)
+                .expect("file metadata")
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(mode, 0o600);
+        }
     }
 }
 
@@ -1288,6 +1352,35 @@ fn ui_load_command() {
     assert!(env.read_auth().contains(BETA_ACCOUNT));
 }
 
+#[cfg(unix)]
+#[test]
+fn ui_load_command_restores_private_auth_permissions() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let env = TestEnv::new();
+    seed_profiles(&env);
+    seed_alpha(&env);
+    fs::set_permissions(
+        env.profiles_dir().join(format!("{BETA_ID}.json")),
+        fs::Permissions::from_mode(0o644),
+    )
+    .expect("set permissive saved profile mode");
+    fs::set_permissions(
+        env.codex_dir().join("auth.json"),
+        fs::Permissions::from_mode(0o644),
+    )
+    .expect("set permissive auth mode");
+
+    env.run(&["load", "--label", "beta"]);
+
+    let auth_mode = fs::metadata(env.codex_dir().join("auth.json"))
+        .expect("auth metadata")
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(auth_mode, 0o600);
+}
+
 #[test]
 fn ui_load_by_id_command() {
     let env = TestEnv::new();
@@ -1356,8 +1449,8 @@ fn ui_load_rejects_invalid_profile_json() {
     fs::write(&profile_path, "{").expect("write profile");
     env.write_profiles_index(&[("broken", 123)], &[("broken", "broken")], None);
     let err = env.run_expect_error(&["load", "--label", "broken"]);
-    assert!(err.contains("No saved profiles.") || err.contains("label 'broken' was not found"));
-    assert!(!profile_path.is_file());
+    assert!(err.contains("Selected profile is invalid") || err.contains("broken.json"));
+    assert!(profile_path.is_file());
 }
 
 #[test]
@@ -1699,7 +1792,35 @@ fn ui_status_json_command() {
     );
     assert_eq!(profile.get("is_current").unwrap(), &serde_json::json!(true));
     assert_eq!(profile.get("is_saved").unwrap(), &serde_json::json!(true));
-    assert!(profile.get("details").unwrap().as_array().is_some());
+    assert!(profile.get("details").is_none());
+    assert_eq!(profile.get("error").unwrap(), &serde_json::Value::Null);
+    let usage = profile.get("usage").expect("usage");
+    assert_eq!(usage.get("state").unwrap(), &serde_json::json!("ok"));
+    let buckets = usage
+        .get("buckets")
+        .and_then(|value| value.as_array())
+        .expect("usage buckets");
+    assert_eq!(buckets.len(), 1);
+    assert_eq!(buckets[0].get("id").unwrap(), &serde_json::json!("codex"));
+    assert_eq!(
+        buckets[0].get("label").unwrap(),
+        &serde_json::json!("codex")
+    );
+    assert_eq!(
+        buckets[0]
+            .get("five_hour")
+            .and_then(|value| value.get("left_percent"))
+            .unwrap(),
+        &serde_json::json!(80)
+    );
+    assert_eq!(
+        buckets[0]
+            .get("five_hour")
+            .and_then(|value| value.get("reset_at"))
+            .unwrap(),
+        &serde_json::json!(2000000000)
+    );
+    assert_eq!(buckets[0].get("weekly").unwrap(), &serde_json::Value::Null);
 
     let _ = usage_handle.join();
 }
@@ -1725,6 +1846,20 @@ fn ui_status_json_unsaved_current_profile() {
     );
     assert_eq!(profile.get("is_current").unwrap(), &serde_json::json!(true));
     assert_eq!(profile.get("is_saved").unwrap(), &serde_json::json!(false));
+    let warnings = profile
+        .get("warnings")
+        .and_then(|value| value.as_array())
+        .expect("warnings array");
+    assert!(
+        warnings
+            .iter()
+            .any(|value| value == "Warning: This profile is not saved yet.")
+    );
+    assert!(
+        warnings
+            .iter()
+            .any(|value| value == "Run `codex-profiles save` to save this profile.")
+    );
 }
 
 #[test]
@@ -1886,6 +2021,68 @@ fn ui_status_all_json_command() {
         json.get("hidden_error_profiles").unwrap(),
         &serde_json::json!(0)
     );
+    assert_eq!(profiles[0].get("details"), None);
+    assert_eq!(
+        profiles[0]
+            .get("usage")
+            .and_then(|value| value.get("state"))
+            .unwrap(),
+        &serde_json::json!("ok")
+    );
+
+    let _ = usage_handle.join();
+}
+
+#[test]
+fn ui_status_json_402_exposes_structured_usage_unavailable() {
+    let env = TestEnv::new();
+    let profile_id = "mail1@example.com-team";
+    write_profile_tokens(
+        &env,
+        profile_id,
+        serde_json::json!({
+            "account_id": "acct-mail-1",
+            "access_token": "token-mail-1",
+            "refresh_token": "refresh-mail-1"
+        }),
+    );
+    env.write_profiles_index(
+        &[(profile_id, 10)],
+        &[(profile_id, "mail1")],
+        Some(profile_id),
+    );
+    seed_current(&env);
+
+    let usage_402_body = r#"{"detail":{"code":"deactivated_workspace"}}"#;
+    let usage_402_resp = format!(
+        "HTTP/1.1 402 Payment Required\r\nContent-Type: application/json\r\nCF-Ray: ray-402\r\nx-request-id: req-402\r\nContent-Length: {}\r\n\r\n{}",
+        usage_402_body.len(),
+        usage_402_body
+    );
+    let (usage_addr, usage_handle) = start_response_server(vec![usage_402_resp], 4).expect("usage");
+    env.write_config(&format!("http://{usage_addr}/backend-api"));
+
+    let output = env.run(&["status", "--json"]);
+    let profile: serde_json::Value = serde_json::from_str(&output).expect("parse status json");
+    assert!(profile.get("details").is_none());
+    let error = profile
+        .get("error")
+        .and_then(serde_json::Value::as_str)
+        .expect("error str");
+    assert!(error.starts_with("Usage error: unexpected status 402 Payment Required: {\"detail\":{\"code\":\"deactivated_workspace\"}}, url: http://"));
+    assert!(error.contains("/backend-api/wham/usage"));
+    let usage = profile.get("usage").expect("usage");
+    assert_eq!(usage.get("state").unwrap(), &serde_json::json!("error"));
+    assert_eq!(usage.get("status_code").unwrap(), &serde_json::json!(402));
+    let summary = usage
+        .get("summary")
+        .and_then(serde_json::Value::as_str)
+        .expect("summary str");
+    assert!(summary.starts_with(
+        "unexpected status 402 Payment Required: {\"detail\":{\"code\":\"deactivated_workspace\"}}, url: http://"
+    ));
+    assert!(summary.contains("/backend-api/wham/usage"));
+    assert!(usage.get("detail").is_none() || usage.get("detail") == Some(&serde_json::Value::Null));
 
     let _ = usage_handle.join();
 }
@@ -2250,7 +2447,7 @@ fn ui_status_all_json_hides_current_api_profile() {
 }
 
 #[test]
-fn ui_list_removes_invalid_profiles() {
+fn ui_list_preserves_invalid_profiles() {
     let env = TestEnv::new();
     fs::create_dir_all(env.profiles_dir()).expect("create profiles dir");
     let bad_profile = env.profiles_dir().join("bad.json");
@@ -2259,16 +2456,16 @@ fn ui_list_removes_invalid_profiles() {
 
     env.run(&["list"]);
 
-    assert!(!bad_profile.is_file());
+    assert!(bad_profile.is_file());
     let index =
         fs::read_to_string(env.profiles_dir().join("profiles.json")).expect("read profiles.json");
     let json: serde_json::Value = serde_json::from_str(&index).expect("parse profiles.json");
     let profiles = json.get("profiles").expect("profiles map");
-    assert!(profiles.get("bad").is_none());
+    assert!(profiles.get("bad").is_some());
 }
 
 #[test]
-fn ui_status_refresh_updates_profile() {
+fn ui_status_refreshes_and_mutates_profile_on_usage_401() {
     let env = TestEnv::new();
     let usage_body = r#"{"rate_limit":{"primary_window":{"used_percent":20,"limit_window_seconds":18000,"reset_at":2000000000}}}"#;
     let usage_ok = format!(
@@ -2297,19 +2494,45 @@ fn ui_status_refresh_updates_profile() {
     env.run(&["save", "--label", "alpha"]);
 
     let refresh_url = format!("http://{refresh_addr}/token");
-    env.run_with_env(
+    let output = env.run_with_env(
         &["status"],
         &[("CODEX_REFRESH_TOKEN_URL_OVERRIDE", refresh_url.as_str())],
     );
 
     let auth_contents = env.read_auth();
+    assert!(output.contains("80% left"));
     assert!(auth_contents.contains("new-access"));
+    assert!(auth_contents.contains("new-refresh"));
+    assert!(!auth_contents.contains("old-access"));
     let profile_path = env.profiles_dir().join(format!("{ALPHA_ID}.json"));
     let profile_contents = fs::read_to_string(profile_path).expect("read profile");
     assert!(profile_contents.contains("new-access"));
+    assert!(profile_contents.contains("new-refresh"));
+    assert!(!profile_contents.contains("old-access"));
 
     let _ = usage_handle.join();
     let _ = refresh_handle.join();
+}
+
+#[test]
+fn ui_status_all_reports_invalid_base_url() {
+    let env = TestEnv::new();
+    seed_profiles(&env);
+    env.write_config("http://example.com");
+
+    let output = env.run(&["status", "--all"]);
+
+    assert!(output.contains("Unsupported chatgpt_base_url"));
+}
+
+#[test]
+fn ui_status_reports_snapshot_errors() {
+    let env = TestEnv::new();
+    fs::write(env.profiles_dir(), "not-a-directory").expect("create invalid profiles path");
+
+    let err = env.run_expect_error(&["status"]);
+
+    assert!(err.contains("not a directory"));
 }
 
 #[test]
@@ -2332,9 +2555,9 @@ fn ui_status_all_uses_usage_path_when_id_token_missing() {
     );
     seed_current(&env);
 
-    let usage_402_body = r#"{"error":"payment_required"}"#;
+    let usage_402_body = r#"{"detail":{"code":"deactivated_workspace"}}"#;
     let usage_402_resp = format!(
-        "HTTP/1.1 402 Payment Required\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+        "HTTP/1.1 402 Payment Required\r\nContent-Type: application/json\r\nCF-Ray: ray-402\r\nx-request-id: req-402\r\nContent-Length: {}\r\n\r\n{}",
         usage_402_body.len(),
         usage_402_body
     );
@@ -2343,7 +2566,13 @@ fn ui_status_all_uses_usage_path_when_id_token_missing() {
 
     let output = env.run(&["status", "--all", "--show-errors"]);
     assert!(output.contains("mail1"));
-    assert!(output.contains("Usage unavailable (402)"));
+    assert!(output.contains("deactivated_workspace (unexpected status 402 Payment Required)"));
+    assert!(!output.contains("deactivated_workspace\n  unexpected status 402 Payment Required"));
+    assert!(output.contains("\n   URL: http://"));
+    assert!(output.contains("\n   CF-Ray: ray-402"));
+    assert!(output.contains("\n   Request ID: req-402"));
+    assert!(output.contains("/backend-api/wham/usage"));
+    assert!(!output.contains("{\"detail\":{\"code\":\"deactivated_workspace\"}}"));
     assert!(!output.contains("Auth is incomplete. Run `codex login`."));
 
     let _ = usage_handle.join();
@@ -2364,5 +2593,375 @@ fn ui_status_api_key_error_message_is_standardized() {
     assert!(output.contains("Error: Usage unavailable for API key"));
     assert!(
         output.contains("Rate-limit usage data is only available for ChatGPT account profiles.")
+    );
+}
+
+// ---------------------------------------------------------------------------
+// --json output tests for all mutating commands
+// ---------------------------------------------------------------------------
+
+fn parse_json(output: &str) -> serde_json::Value {
+    serde_json::from_str(output.trim())
+        .unwrap_or_else(|e| panic!("Expected valid JSON output, got: {output:?}\nError: {e}"))
+}
+
+#[test]
+fn json_save_returns_success_shape() {
+    let env = TestEnv::new();
+    seed_current(&env);
+
+    let raw = env.run(&["save", "--label", "work", "--json"]);
+    let v = parse_json(&raw);
+
+    assert_eq!(v["command"], "save", "command field");
+    assert_eq!(v["success"], true, "success field");
+    let profile = &v["profile"];
+    assert!(profile["id"].is_string(), "profile.id is string");
+    assert_eq!(profile["label"], "work", "profile.label");
+    assert!(profile.get("default").is_none(), "profile.default removed");
+}
+
+#[test]
+fn json_load_returns_success_shape() {
+    let env = TestEnv::new();
+    seed_alpha(&env);
+    env.run(&["save", "--label", "alpha"]);
+
+    let raw = env.run(&["load", "--label", "alpha", "--json"]);
+    let v = parse_json(&raw);
+
+    assert_eq!(v["command"], "load");
+    assert_eq!(v["success"], true);
+    let profile = &v["profile"];
+    assert!(profile["id"].is_string());
+    assert_eq!(profile["label"], "alpha");
+    assert!(profile.get("default").is_none());
+}
+
+#[test]
+fn json_delete_returns_success_shape() {
+    let env = TestEnv::new();
+    seed_alpha(&env);
+    env.run(&["save", "--label", "alpha"]);
+
+    let raw = env.run(&["delete", "--label", "alpha", "--yes", "--json"]);
+    let v = parse_json(&raw);
+
+    assert_eq!(v["command"], "delete");
+    assert_eq!(v["success"], true);
+    let profile = &v["profile"];
+    assert!(profile["count"].is_number(), "profile.count is number");
+    let deleted = profile["deleted"].as_array().expect("deleted is array");
+    assert!(!deleted.is_empty(), "at least one profile deleted");
+    assert!(deleted[0]["id"].is_string(), "deleted[0].id is string");
+}
+
+#[test]
+fn json_label_set_returns_success_shape() {
+    let env = TestEnv::new();
+    seed_alpha(&env);
+    env.run(&["save", "--label", "alpha"]);
+
+    let raw = env.run(&[
+        "label", "set", "--id", ALPHA_ID, "--to", "newalpha", "--json",
+    ]);
+    let v = parse_json(&raw);
+
+    assert_eq!(v["command"], "label set");
+    assert_eq!(v["success"], true);
+    let profile = &v["profile"];
+    assert!(profile["id"].is_string());
+    assert_eq!(profile["label"], "newalpha");
+    assert!(profile.get("default").is_none());
+}
+
+#[test]
+fn json_label_clear_returns_success_shape() {
+    let env = TestEnv::new();
+    seed_alpha(&env);
+    env.run(&["save", "--label", "alpha"]);
+
+    let raw = env.run(&["label", "clear", "--id", ALPHA_ID, "--json"]);
+    let v = parse_json(&raw);
+
+    assert_eq!(v["command"], "label clear");
+    assert_eq!(v["success"], true);
+    let profile = &v["profile"];
+    assert!(profile["id"].is_string());
+    assert!(profile["label"].is_null() || profile["label"] == "");
+    assert!(profile.get("default").is_none());
+}
+
+#[test]
+fn json_label_rename_returns_success_shape() {
+    let env = TestEnv::new();
+    seed_alpha(&env);
+    env.run(&["save", "--label", "alpha"]);
+
+    let raw = env.run(&[
+        "label", "rename", "--label", "alpha", "--to", "renamed", "--json",
+    ]);
+    let v = parse_json(&raw);
+
+    assert_eq!(v["command"], "label rename");
+    assert_eq!(v["success"], true);
+    let profile = &v["profile"];
+    assert!(profile["id"].is_string());
+    assert_eq!(profile["label"], "renamed");
+    assert!(profile.get("default").is_none());
+}
+
+#[test]
+fn json_export_returns_success_shape() {
+    let env = TestEnv::new();
+    seed_alpha(&env);
+    seed_beta(&env);
+    let out_path = env.home_path().join("exported.json");
+
+    let raw = env.run(&["export", "--output", out_path.to_str().unwrap(), "--json"]);
+    let v = parse_json(&raw);
+
+    assert_eq!(v["command"], "export");
+    assert_eq!(v["success"], true);
+    let profile = &v["profile"];
+    assert!(profile["count"].is_number(), "profile.count is number");
+    assert!(profile["path"].is_string(), "profile.path is string");
+    assert!(out_path.exists(), "export file should exist on disk");
+}
+
+#[test]
+fn json_import_returns_success_shape() {
+    // Export from one env, import into a fresh one.
+    let export_env = TestEnv::new();
+    seed_alpha(&export_env);
+    seed_beta(&export_env);
+    let bundle = export_env.home_path().join("bundle.json");
+    export_env.run(&["export", "--output", bundle.to_str().unwrap()]);
+
+    let import_env = TestEnv::new();
+    let raw = import_env.run(&["import", "--input", bundle.to_str().unwrap(), "--json"]);
+    let v = parse_json(&raw);
+
+    assert_eq!(v["command"], "import");
+    assert_eq!(v["success"], true);
+    let profile = &v["profile"];
+    assert!(profile["count"].is_number());
+    assert!(profile["profiles"].is_array());
+    let imported = profile["profiles"].as_array().expect("profiles array");
+    assert!(imported.iter().all(|entry| entry.get("default").is_none()));
+}
+
+#[test]
+fn json_mutating_command_error_exits_nonzero_no_json_on_stdout() {
+    // delete a label that doesn't exist → error path; stdout must be empty / non-JSON.
+    let env = TestEnv::new();
+    seed_alpha(&env);
+    env.run(&["save", "--label", "alpha"]); // ensure there IS a profile store
+
+    let output = std::process::Command::new(&env.bin_path)
+        .args(["delete", "--label", "nonexistent", "--yes", "--json"])
+        .env("HOME", env.home_path())
+        .env("CODEX_PROFILES_HOME", env.home_path())
+        .env("CODEX_PROFILES_COMMAND", "codex-profiles")
+        .env("CODEX_PROFILES_SKIP_UPDATE", "1")
+        .env("NO_COLOR", "1")
+        .env("LANG", "C")
+        .env("LC_ALL", "C")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .expect("failed to spawn binary");
+
+    assert!(
+        !output.status.success(),
+        "expected non-zero exit for missing label"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // stdout must NOT contain valid JSON (errors go to stderr)
+    assert!(
+        serde_json::from_str::<serde_json::Value>(stdout.trim()).is_err()
+            || stdout.trim().is_empty(),
+        "stdout should be empty or non-JSON on error, got: {stdout:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Backward compatibility tests
+// ---------------------------------------------------------------------------
+
+/// A v0.1.0-format profiles.json (no `version`, has `active_profile_id`,
+/// profile entries have `last_used`/`added_at`, embedded `update_cache`)
+/// must be read without error and the profiles it contains must be visible.
+#[test]
+fn compat_v01_profiles_index_migrates_on_read() {
+    let env = TestEnv::new();
+
+    // Write the profile token file that the index refers to.
+    let id = "legacy-v01-id";
+    write_profile_tokens(
+        &env,
+        id,
+        serde_json::json!({
+            "account_id": "acct-legacy",
+            "id_token": "tok-legacy",
+            "access_token": "tok-legacy-access"
+        }),
+    );
+
+    // Write a raw v0.1.0-style profiles.json with no `version` field.
+    let index_path = env.profiles_dir().join("profiles.json");
+    let v01_index = serde_json::json!({
+        "active_profile_id": id,
+        "profiles": {
+            id: {
+                "last_used": 1_700_000_000u64,
+                "added_at": 1u64,
+                "label": "legacy-work"
+            }
+        },
+        "update_cache": {
+            "latest_version": "0.1.0",
+            "last_checked_at": "2024-01-01T00:00:00Z"
+        }
+    });
+    std::fs::write(
+        &index_path,
+        serde_json::to_string_pretty(&v01_index).unwrap(),
+    )
+    .expect("write v0.1 profiles.json");
+
+    // `list --json` must succeed and include the migrated profile.
+    let out = env.run(&["list", "--json"]);
+    let v: serde_json::Value = parse_json(&out);
+    let profiles = v["profiles"].as_array().expect("profiles must be array");
+    let ids: Vec<&str> = profiles.iter().filter_map(|p| p["id"].as_str()).collect();
+    assert!(
+        ids.contains(&id),
+        "expected legacy profile id '{id}' in list output, got {ids:?}"
+    );
+
+    // The rewritten file must no longer contain legacy fields.
+    let rewritten: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&index_path).unwrap())
+            .expect("rewritten file must be valid JSON");
+    assert!(
+        rewritten.get("active_profile_id").is_none(),
+        "rewritten index must not have 'active_profile_id'"
+    );
+    assert!(
+        rewritten.get("update_cache").is_none(),
+        "rewritten index must not have 'update_cache'"
+    );
+}
+
+/// A v0.2.0-format profiles.json (`version: 1`, no `last_used`, no
+/// `update_cache`) must load cleanly with profiles visible.
+#[test]
+fn compat_v02_profiles_index_loads_correctly() {
+    let env = TestEnv::new();
+
+    let id = "v02-id";
+    write_profile_tokens(
+        &env,
+        id,
+        serde_json::json!({
+            "account_id": "acct-v02",
+            "id_token": "tok-v02",
+            "access_token": "tok-v02-access"
+        }),
+    );
+
+    // Write a v0.2.0-style index: has version:1 and no newer metadata.
+    let index_path = env.profiles_dir().join("profiles.json");
+    let v02_index = serde_json::json!({
+        "version": 1,
+        "profiles": {
+            id: {
+                "email": "v02@example.com",
+                "plan": "team",
+                "label": "v02-work",
+                "account_id": "acct-v02",
+                "is_api_key": false
+            }
+        }
+    });
+    std::fs::write(
+        &index_path,
+        serde_json::to_string_pretty(&v02_index).unwrap(),
+    )
+    .expect("write v0.2 profiles.json");
+
+    let out = env.run(&["list", "--json"]);
+    let v: serde_json::Value = parse_json(&out);
+
+    let profiles = v["profiles"].as_array().expect("profiles must be array");
+    let ids: Vec<&str> = profiles.iter().filter_map(|p| p["id"].as_str()).collect();
+    assert!(
+        ids.contains(&id),
+        "expected v0.2 profile id '{id}' in list output, got {ids:?}"
+    );
+}
+
+/// Running `doctor --fix` against a v0.1.0-format index must:
+/// * report normalisation in its repair log, and
+/// * rewrite the file so it has `version: 3` and no legacy fields.
+#[test]
+fn compat_v01_doctor_fix_migrates_index() {
+    let env = TestEnv::new();
+
+    let id = "legacy-doctor-id";
+    write_profile_tokens(
+        &env,
+        id,
+        serde_json::json!({
+            "account_id": "acct-doc",
+            "id_token": "tok-doc",
+            "access_token": "tok-doc-access"
+        }),
+    );
+
+    let index_path = env.profiles_dir().join("profiles.json");
+    let v01_index = serde_json::json!({
+        "active_profile_id": id,
+        "profiles": {
+            id: {
+                "last_used": 1_700_000_000u64,
+                "added_at": 1u64
+            }
+        }
+    });
+    std::fs::write(
+        &index_path,
+        serde_json::to_string_pretty(&v01_index).unwrap(),
+    )
+    .expect("write v0.1 profiles.json for doctor test");
+
+    // doctor --fix should succeed.
+    let out = env.run(&["doctor", "--fix"]);
+    let lower = out.to_lowercase();
+    assert!(
+        lower.contains("normaliz")
+            || lower.contains("migrat")
+            || lower.contains("repair")
+            || lower.contains("fix"),
+        "expected doctor --fix to report a normalisation/migration, got:\n{out}"
+    );
+
+    // Rewritten file must have version 3 and no legacy fields.
+    let rewritten: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&index_path).unwrap())
+            .expect("rewritten file must be valid JSON after doctor --fix");
+    assert_eq!(
+        rewritten["version"],
+        serde_json::json!(3),
+        "expected version:3 after doctor --fix, got {}",
+        rewritten["version"]
+    );
+    assert!(
+        rewritten.get("active_profile_id").is_none(),
+        "doctor --fix must remove 'active_profile_id'"
+    );
+    assert!(
+        rewritten.get("update_cache").is_none(),
+        "doctor --fix must remove 'update_cache'"
     );
 }

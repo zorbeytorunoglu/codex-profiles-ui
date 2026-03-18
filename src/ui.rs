@@ -81,7 +81,7 @@ pub fn format_cancel(use_color: bool) -> String {
 }
 
 pub fn format_hint(message: &str, use_color: bool) -> String {
-    if is_plain() {
+    if !use_color {
         crate::msg1(UI_INFO_PREFIX, message)
     } else {
         let message = format!("\n\n{message}");
@@ -121,7 +121,7 @@ pub fn format_label_later_hint(id: &str, use_color: bool) -> String {
 
 pub fn format_unsaved_warning(use_color: bool) -> Vec<String> {
     let warning = UI_WARNING_UNSAVED_PROFILE;
-    let save_line = UI_HINT_SAVE_PROFILE.replace("{save}", &format_command("save", false));
+    let save_line = UI_HINT_SAVE_PROFILE.replace("{save}", &format_command("save", use_color));
     if !use_color {
         return vec![warning.to_string(), save_line];
     }
@@ -137,9 +137,8 @@ pub fn format_list_hint(use_color: bool) -> String {
 }
 
 pub fn normalize_error(message: &str) -> String {
-    let message = message
-        .strip_prefix(&format!("{} ", UI_ERROR_PREFIX))
-        .unwrap_or(message);
+    let message = message.strip_prefix(UI_ERROR_PREFIX).unwrap_or(message);
+    let message = message.trim_start();
     let message_lower = message.to_ascii_lowercase();
     if message_lower.contains("codex login")
         && !message.contains("(401)")
@@ -160,15 +159,17 @@ pub fn format_error(message: &str) -> String {
     let normalized = normalize_error(message);
     let use_color = use_color_stdout();
     let prefix = if use_color {
-        UI_ERROR_PREFIX.red().bold().blink().to_string()
+        UI_ERROR_PREFIX.red().bold().to_string()
     } else {
         UI_ERROR_PREFIX.to_string()
     };
+    let indent = " ".repeat(prefix.chars().count());
     let mut lines = normalized.lines();
     let first = lines.next().unwrap_or_default();
-    let mut text = format!("{prefix} {first}");
+    let mut text = format!("{prefix}{first}");
     for line in lines {
         text.push('\n');
+        text.push_str(&indent);
         text.push_str(&style_text(line, use_color, |text| text.dimmed().italic()));
     }
     text
@@ -181,6 +182,9 @@ pub fn format_profile_display(
     is_current: bool,
     use_color: bool,
 ) -> String {
+    let label = label.map(|value| crate::sanitize_for_terminal(&value));
+    let email = email.map(|value| crate::sanitize_for_terminal(&value));
+    let plan = plan.map(|value| crate::sanitize_for_terminal(&value));
     let label = label.as_deref();
     if email
         .as_deref()
@@ -215,7 +219,7 @@ pub fn format_entry_header(display: &str, use_color: bool) -> String {
     if use_color {
         display.bold().to_string()
     } else {
-        display.to_string()
+        crate::sanitize_for_terminal(display)
     }
 }
 
@@ -319,6 +323,37 @@ fn format_save_hint_message(
             .replace("{login}", &login)
             .replace("{save}", &save)
     }
+}
+
+/// Strip ANSI escape sequences from a string. Handles all `ESC [` sequences
+/// (not just SGR `m`-terminated ones) so cursor movement codes are also removed.
+pub(crate) fn strip_ansi(input: &str) -> String {
+    if !input.contains('\u{1b}') {
+        return input.to_string();
+    }
+    let mut out = String::with_capacity(input.len());
+    let bytes = input.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == 0x1b {
+            i += 1;
+            if i < bytes.len() && bytes[i] == b'[' {
+                i += 1;
+                while i < bytes.len() {
+                    let b = bytes[i];
+                    i += 1;
+                    if (0x40..=0x7e).contains(&b) {
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+        let ch = input[i..].chars().next().expect("valid utf-8 char");
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
 }
 
 #[cfg(test)]
@@ -431,11 +466,7 @@ mod tests {
         let err = format_error(&message);
         assert_eq!(
             err,
-            crate::msg2(
-                crate::UI_ERROR_TWO_LINE,
-                crate::AUTH_REFRESH_401_TITLE,
-                crate::AUTH_RELOGIN_AND_SAVE
-            )
+            "Error: Token refresh unauthorized (401)\n       Authenticate again with `codex login`, then save this profile"
         );
     }
 
@@ -459,6 +490,37 @@ mod tests {
         assert!(display.contains("me@example.com"));
         let unknown = format_profile_display(None, None, None, false, false);
         assert!(unknown.contains("Unknown"));
+    }
+
+    #[test]
+    fn format_profile_display_sanitizes_terminal_control_sequences() {
+        let display = format_profile_display(
+            Some("me\u{1b}[31m@example.com\u{1b}[0m".to_string()),
+            Some("pro\u{7}".to_string()),
+            Some("la\u{1b}]8;;https://evil\u{7}bel\u{1b}]8;;\u{7}".to_string()),
+            false,
+            false,
+        );
+        assert!(!display.contains('\u{1b}'));
+        assert!(!display.contains('\u{7}'));
+        assert!(display.contains("me@example.com"));
+        assert!(display.contains("PRO"));
+        assert!(display.contains("label"));
+    }
+
+    #[test]
+    fn format_entry_header_sanitizes_terminal_control_sequences() {
+        let header = format_entry_header("foo\u{1b}[31mbar\u{1b}[0m", false);
+        assert_eq!(header, "foobar");
+    }
+
+    #[test]
+    fn format_entry_header_preserves_existing_ansi_sequences_when_colored() {
+        colored::control::set_override(true);
+        let header = format_entry_header("\u{1b}[32mfoo\u{1b}[0m", true);
+        colored::control::unset_override();
+        assert!(header.contains("\u{1b}[32m"));
+        assert_eq!(strip_ansi(&header), "foo");
     }
 
     #[test]

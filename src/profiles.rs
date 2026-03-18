@@ -11,20 +11,19 @@ use std::io::{self, IsTerminal as _};
 use std::path::Component;
 use std::path::{Path, PathBuf};
 
+use crate::json_response::CommandResultJson;
 use crate::{
-    AUTH_ERR_INCOMPLETE_ACCOUNT, AUTH_ERR_PROFILE_MISSING_ACCOUNT,
-    AUTH_ERR_PROFILE_MISSING_EMAIL_PLAN, PROFILE_COPY_CONTEXT_LOAD, PROFILE_COPY_CONTEXT_SAVE,
-    PROFILE_DELETE_HELP, PROFILE_ERR_COPY_CONTEXT, PROFILE_ERR_CURRENT_NOT_SAVED,
-    PROFILE_ERR_DELETE_CONFIRM_REQUIRED, PROFILE_ERR_FAILED_DELETE, PROFILE_ERR_ID_NO_MATCH,
-    PROFILE_ERR_ID_NOT_FOUND, PROFILE_ERR_INDEX_INVALID_JSON, PROFILE_ERR_LABEL_EMPTY,
-    PROFILE_ERR_LABEL_EXISTS, PROFILE_ERR_LABEL_NO_MATCH, PROFILE_ERR_LABEL_NOT_FOUND,
-    PROFILE_ERR_PROMPT_CONTEXT, PROFILE_ERR_PROMPT_DELETE, PROFILE_ERR_PROMPT_LOAD,
-    PROFILE_ERR_READ_INDEX, PROFILE_ERR_READ_PROFILES_DIR, PROFILE_ERR_REFRESHED_ACCESS_MISSING,
-    PROFILE_ERR_REMOVE_INVALID, PROFILE_ERR_RENAME_PROFILE, PROFILE_ERR_SELECTED_INVALID,
-    PROFILE_ERR_SERIALIZE_INDEX, PROFILE_ERR_SYNC_CURRENT, PROFILE_ERR_TTY_REQUIRED,
-    PROFILE_ERR_WRITE_INDEX, PROFILE_LOAD_HELP, PROFILE_MSG_DELETED_COUNT,
-    PROFILE_MSG_DELETED_WITH, PROFILE_MSG_LABEL_CLEARED, PROFILE_MSG_LABEL_SET,
-    PROFILE_MSG_LOADED_WITH, PROFILE_MSG_NOT_FOUND, PROFILE_MSG_REMOVED_INVALID, PROFILE_MSG_SAVED,
+    AUTH_ERR_INCOMPLETE_ACCOUNT, AUTH_ERR_PROFILE_MISSING_EMAIL_PLAN, PROFILE_COPY_CONTEXT_LOAD,
+    PROFILE_COPY_CONTEXT_SAVE, PROFILE_DELETE_HELP, PROFILE_ERR_COPY_CONTEXT,
+    PROFILE_ERR_CURRENT_NOT_SAVED, PROFILE_ERR_DELETE_CONFIRM_REQUIRED, PROFILE_ERR_FAILED_DELETE,
+    PROFILE_ERR_ID_NO_MATCH, PROFILE_ERR_ID_NOT_FOUND, PROFILE_ERR_INDEX_INVALID_JSON,
+    PROFILE_ERR_LABEL_EMPTY, PROFILE_ERR_LABEL_EXISTS, PROFILE_ERR_LABEL_NO_MATCH,
+    PROFILE_ERR_LABEL_NOT_FOUND, PROFILE_ERR_PROMPT_CONTEXT, PROFILE_ERR_PROMPT_DELETE,
+    PROFILE_ERR_PROMPT_LOAD, PROFILE_ERR_READ_INDEX, PROFILE_ERR_READ_PROFILES_DIR,
+    PROFILE_ERR_RENAME_PROFILE, PROFILE_ERR_SELECTED_INVALID, PROFILE_ERR_SERIALIZE_INDEX,
+    PROFILE_ERR_SYNC_CURRENT, PROFILE_ERR_TTY_REQUIRED, PROFILE_ERR_WRITE_INDEX, PROFILE_LOAD_HELP,
+    PROFILE_MSG_DELETED_COUNT, PROFILE_MSG_DELETED_WITH, PROFILE_MSG_LABEL_CLEARED,
+    PROFILE_MSG_LABEL_SET, PROFILE_MSG_LOADED_WITH, PROFILE_MSG_NOT_FOUND, PROFILE_MSG_SAVED,
     PROFILE_MSG_SAVED_WITH, PROFILE_PROMPT_CANCEL, PROFILE_PROMPT_CONTINUE_WITHOUT_SAVING,
     PROFILE_PROMPT_DELETE_MANY, PROFILE_PROMPT_DELETE_ONE, PROFILE_PROMPT_DELETE_SELECTED,
     PROFILE_PROMPT_SAVE_AND_CONTINUE, PROFILE_STATUS_API_HIDDEN, PROFILE_STATUS_ERROR_HIDDEN,
@@ -35,8 +34,7 @@ use crate::{
 use crate::{
     AuthFile, ProfileIdentityKey, Tokens, extract_email_and_plan, extract_profile_identity,
     is_api_key_profile, is_free_plan, is_profile_ready, profile_error, read_tokens,
-    read_tokens_opt, refresh_profile_tokens, require_identity, token_account_id,
-    tokens_from_api_key,
+    read_tokens_opt, require_identity, token_account_id, tokens_from_api_key,
 };
 use crate::{
     CANCELLED_MESSAGE, format_action, format_entry_header, format_error, format_label_later_hint,
@@ -48,10 +46,7 @@ use crate::{
     Paths, USAGE_UNAVAILABLE_API_KEY_DETAIL, USAGE_UNAVAILABLE_API_KEY_TITLE, command_name,
     copy_atomic, write_atomic,
 };
-use crate::{
-    UsageLock, fetch_usage_details, format_usage_unavailable, lock_usage, read_base_url,
-    usage_unavailable,
-};
+use crate::{UsageLock, format_usage_unavailable, lock_usage, read_base_url, usage_unavailable};
 
 const DEFAULT_USAGE_CONCURRENCY: usize = 32;
 const MAX_USAGE_CONCURRENCY: usize = 128;
@@ -60,8 +55,6 @@ const USAGE_CONCURRENCY_ENV: &str = "CODEX_PROFILES_USAGE_CONCURRENCY";
 #[derive(Serialize, Deserialize)]
 struct ExportBundle {
     version: u8,
-    #[serde(default)]
-    default_profile_id: Option<String>,
     profiles: Vec<ExportedProfile>,
 }
 
@@ -79,7 +72,7 @@ struct PreparedImportProfile {
     tokens: Tokens,
 }
 
-pub fn save_profile(paths: &Paths, label: Option<String>) -> Result<(), String> {
+pub fn save_profile(paths: &Paths, label: Option<String>, json: bool) -> Result<(), String> {
     let use_color = use_color_stdout();
     let mut store = ProfileStore::load(paths)?;
     let tokens = read_tokens(&paths.auth)?;
@@ -101,6 +94,18 @@ pub fn save_profile(paths: &Paths, label: Option<String>) -> Result<(), String> 
     );
     store.save(paths)?;
 
+    if json {
+        let result = CommandResultJson::success(
+            "save",
+            serde_json::json!({
+                "id": id,
+                "label": label_display,
+            }),
+        );
+        result.print()?;
+        return Ok(());
+    }
+
     let info = profile_info(Some(&tokens), label_display.clone(), true, use_color);
     let message = if info.email.is_some() {
         crate::msg1(PROFILE_MSG_SAVED_WITH, info.display)
@@ -121,6 +126,7 @@ pub fn set_profile_label(
     label: Option<String>,
     id: Option<String>,
     to: String,
+    json: bool,
 ) -> Result<(), String> {
     let use_color = use_color_stdout();
     let mut store = ProfileStore::load(paths)?;
@@ -129,6 +135,18 @@ pub fn set_profile_label(
 
     assign_label(&mut store.labels, &target_label, &target_id)?;
     store.save(paths)?;
+
+    if json {
+        let result = CommandResultJson::success(
+            "label set",
+            serde_json::json!({
+                "id": target_id,
+                "label": target_label,
+            }),
+        );
+        result.print()?;
+        return Ok(());
+    }
 
     let message = format_action(
         &crate::msg2(PROFILE_MSG_LABEL_SET, target_label, target_id),
@@ -142,6 +160,7 @@ pub fn clear_profile_label(
     paths: &Paths,
     label: Option<String>,
     id: Option<String>,
+    json: bool,
 ) -> Result<(), String> {
     let use_color = use_color_stdout();
     let mut store = ProfileStore::load(paths)?;
@@ -149,6 +168,18 @@ pub fn clear_profile_label(
 
     remove_labels_for_id(&mut store.labels, &target_id);
     store.save(paths)?;
+
+    if json {
+        let result = CommandResultJson::success(
+            "label clear",
+            serde_json::json!({
+                "id": target_id,
+                "label": null,
+            }),
+        );
+        result.print()?;
+        return Ok(());
+    }
 
     let message = format_action(
         &crate::msg1(PROFILE_MSG_LABEL_CLEARED, target_id),
@@ -158,7 +189,12 @@ pub fn clear_profile_label(
     Ok(())
 }
 
-pub fn rename_profile_label(paths: &Paths, label: String, to: String) -> Result<(), String> {
+pub fn rename_profile_label(
+    paths: &Paths,
+    label: String,
+    to: String,
+    json: bool,
+) -> Result<(), String> {
     let use_color = use_color_stdout();
     let mut store = ProfileStore::load(paths)?;
     let old_label = trim_label(&label)?.to_string();
@@ -168,6 +204,18 @@ pub fn rename_profile_label(paths: &Paths, label: String, to: String) -> Result<
     assign_label(&mut store.labels, &new_label, &target_id)?;
     store.save(paths)?;
 
+    if json {
+        let result = CommandResultJson::success(
+            "label rename",
+            serde_json::json!({
+                "id": target_id,
+                "label": new_label,
+            }),
+        );
+        result.print()?;
+        return Ok(());
+    }
+
     let message = format_action(
         &format!("Renamed label '{}' to '{}'", old_label, new_label),
         use_color,
@@ -176,63 +224,12 @@ pub fn rename_profile_label(paths: &Paths, label: String, to: String) -> Result<
     Ok(())
 }
 
-pub fn set_default_profile(
-    paths: &Paths,
-    label: Option<String>,
-    id: Option<String>,
-) -> Result<(), String> {
-    let use_color = use_color_stdout();
-    let mut store = ProfileStore::load(paths)?;
-    let target_id = resolve_label_target_id(&store, label.as_deref(), id.as_deref())?;
-    store.profiles_index.default_profile_id = Some(target_id.clone());
-    store.save(paths)?;
-
-    let display = default_profile_display(&store, &target_id, use_color);
-    let message = format_action(&format!("Set default profile {}", display), use_color);
-    print_output_block(&message);
-    Ok(())
-}
-
-pub fn clear_default_profile(paths: &Paths) -> Result<(), String> {
-    let use_color = use_color_stdout();
-    let mut store = ProfileStore::load(paths)?;
-    store.profiles_index.default_profile_id = None;
-    store.save(paths)?;
-
-    let message = format_action("Cleared default profile", use_color);
-    print_output_block(&message);
-    Ok(())
-}
-
-pub fn show_default_profile(paths: &Paths) -> Result<(), String> {
-    let use_color = use_color_stdout();
-    let store = ProfileStore::load(paths)?;
-    let Some(default_id) = store.profiles_index.default_profile_id.as_deref() else {
-        print_output_block("No default profile set.");
-        return Ok(());
-    };
-
-    let display = default_profile_display(&store, default_id, use_color);
-    let message = format_action(&format!("Default profile {}", display), use_color);
-    print_output_block(&message);
-    Ok(())
-}
-
-fn default_profile_display(store: &ProfileStore, id: &str, use_color: bool) -> String {
-    let label = label_for_id(&store.labels, id);
-    let index_entry = store.profiles_index.profiles.get(id);
-    if index_entry.is_none() {
-        return format!("{} [id: {}]", id, id);
-    }
-    let display = profile_info_with_fallback(None, index_entry, label, false, use_color).display;
-    format!("{} [id: {}]", display, id)
-}
-
 pub fn export_profiles(
     paths: &Paths,
     label: Option<String>,
     ids: Vec<String>,
     output: PathBuf,
+    json: bool,
 ) -> Result<(), String> {
     if output.exists() {
         return Err(format!(
@@ -261,20 +258,28 @@ pub fn export_profiles(
 
     let bundle = ExportBundle {
         version: 1,
-        default_profile_id: store
-            .profiles_index
-            .default_profile_id
-            .clone()
-            .filter(|id| profiles.iter().any(|profile| profile.id == *id)),
         profiles,
     };
     let mut bytes = serde_json::to_vec_pretty(&bundle).map_err(|err| err.to_string())?;
     bytes.push(b'\n');
-    write_atomic(&output, &bytes)?;
+    crate::common::write_atomic_private(&output, &bytes)?;
     tighten_export_permissions(&output)?;
 
     let count = bundle.profiles.len();
     let noun = if count == 1 { "profile" } else { "profiles" };
+
+    if json {
+        let result = CommandResultJson::success(
+            "export",
+            serde_json::json!({
+                "path": output.display().to_string(),
+                "count": count,
+            }),
+        );
+        result.print()?;
+        return Ok(());
+    }
+
     let message = format_action(
         &format!("Exported {count} {noun} to {}", output.display()),
         use_color,
@@ -283,7 +288,7 @@ pub fn export_profiles(
     Ok(())
 }
 
-pub fn import_profiles(paths: &Paths, input: PathBuf) -> Result<(), String> {
+pub fn import_profiles(paths: &Paths, input: PathBuf, json: bool) -> Result<(), String> {
     let use_color = use_color_stdout();
     let raw = fs::read_to_string(&input).map_err(|err| {
         format!(
@@ -305,21 +310,6 @@ pub fn import_profiles(paths: &Paths, input: PathBuf) -> Result<(), String> {
     let mut staged_labels = store.labels.clone();
     let mut seen_ids = HashSet::new();
     let mut prepared = Vec::with_capacity(bundle.profiles.len());
-    let imported_default_id = bundle
-        .default_profile_id
-        .clone()
-        .filter(|id| bundle.profiles.iter().any(|profile| profile.id == *id));
-    if let (Some(existing_default), Some(imported_default)) = (
-        store.profiles_index.default_profile_id.as_deref(),
-        imported_default_id.as_deref(),
-    ) && existing_default != imported_default
-    {
-        return Err(format!(
-            "Error: Default profile '{}' already exists. Clear it before importing a different default.",
-            existing_default
-        ));
-    }
-
     for profile in bundle.profiles {
         validate_import_profile_id(&profile.id)?;
         if !seen_ids.insert(profile.id.clone()) {
@@ -340,7 +330,7 @@ pub fn import_profiles(paths: &Paths, input: PathBuf) -> Result<(), String> {
     let mut written_ids = Vec::with_capacity(prepared.len());
     for profile in &prepared {
         let path = profile_path_for_id(&paths.profiles, &profile.id);
-        if let Err(err) = write_atomic(&path, &profile.contents) {
+        if let Err(err) = crate::common::write_atomic_private(&path, &profile.contents) {
             cleanup_imported_profiles(paths, &written_ids);
             return Err(err);
         }
@@ -358,9 +348,6 @@ pub fn import_profiles(paths: &Paths, input: PathBuf) -> Result<(), String> {
             profile.label.clone(),
         );
     }
-    if let Some(default_id) = imported_default_id {
-        store.profiles_index.default_profile_id = Some(default_id);
-    }
     if let Err(err) = store.save(paths) {
         cleanup_imported_profiles(paths, &written_ids);
         return Err(err);
@@ -368,6 +355,28 @@ pub fn import_profiles(paths: &Paths, input: PathBuf) -> Result<(), String> {
 
     let count = prepared.len();
     let noun = if count == 1 { "profile" } else { "profiles" };
+
+    if json {
+        let imported: Vec<serde_json::Value> = prepared
+            .iter()
+            .map(|p| {
+                serde_json::json!({
+                    "id": p.id,
+                    "label": p.label,
+                })
+            })
+            .collect();
+        let result = CommandResultJson::success(
+            "import",
+            serde_json::json!({
+                "count": count,
+                "profiles": imported,
+            }),
+        );
+        result.print()?;
+        return Ok(());
+    }
+
     let message = format_action(
         &format!("Imported {count} {noun} from {}", input.display()),
         use_color,
@@ -381,18 +390,19 @@ pub fn load_profile(
     label: Option<String>,
     id: Option<String>,
     force: bool,
+    json: bool,
 ) -> Result<(), String> {
     let use_color_err = use_color_stderr();
     let use_color_out = use_color_stdout();
     let no_profiles = format_no_profiles(paths, use_color_err);
     let (mut snapshot, mut ordered) = load_snapshot_ordered(paths, true, &no_profiles)?;
 
-    if let Some(reason) = unsaved_reason(paths, &snapshot.tokens)?
+    if let Some(reason) = unsaved_reason(paths, &snapshot.tokens)
         && !force
     {
         match prompt_unsaved_load(paths, &reason)? {
             LoadChoice::SaveAndContinue => {
-                save_profile(paths, None)?;
+                save_profile(paths, None, false)?;
                 let no_profiles = format_no_profiles(paths, use_color_err);
                 let result = load_snapshot_ordered(paths, true, &no_profiles)?;
                 snapshot = result.0;
@@ -410,7 +420,6 @@ pub fn load_profile(
         "load",
         label.as_deref(),
         id.as_deref(),
-        snapshot.index.default_profile_id.as_deref(),
         &snapshot,
         &candidates,
     )?;
@@ -449,8 +458,25 @@ pub fn load_profile(
         .tokens
         .get(&selected_id)
         .and_then(|result| result.as_ref().ok());
-    update_profiles_index_entry(&mut store.profiles_index, &selected_id, tokens, label);
+    update_profiles_index_entry(
+        &mut store.profiles_index,
+        &selected_id,
+        tokens,
+        label.clone(),
+    );
     store.save(paths)?;
+
+    if json {
+        let result = CommandResultJson::success(
+            "load",
+            serde_json::json!({
+                "id": selected_id,
+                "label": label,
+            }),
+        );
+        result.print()?;
+        return Ok(());
+    }
 
     let message = format_action(
         &crate::msg1(PROFILE_MSG_LOADED_WITH, selected_display),
@@ -465,6 +491,7 @@ pub fn delete_profile(
     yes: bool,
     label: Option<String>,
     ids: Vec<String>,
+    json: bool,
 ) -> Result<(), String> {
     let use_color_out = use_color_stdout();
     let use_color_err = use_color_stderr();
@@ -506,6 +533,23 @@ pub fn delete_profile(
         store.profiles_index.profiles.remove(selected);
     }
     store.save(paths)?;
+
+    if json {
+        let deleted: Vec<serde_json::Value> = selected_ids
+            .iter()
+            .zip(displays.iter())
+            .map(|(id, display)| serde_json::json!({ "id": id, "display": display }))
+            .collect();
+        let result = CommandResultJson::success(
+            "delete",
+            serde_json::json!({
+                "count": selected_ids.len(),
+                "deleted": deleted,
+            }),
+        );
+        result.print()?;
+        return Ok(());
+    }
 
     let message = if selected_ids.len() == 1 {
         crate::msg1(PROFILE_MSG_DELETED_WITH, &displays[0])
@@ -592,24 +636,14 @@ pub fn status_profiles(
         return status_selected_profile(paths, label.as_deref(), id.as_deref(), json);
     }
 
-    let snapshot = load_snapshot(paths, false).ok();
-    let current_saved_id = snapshot
-        .as_ref()
-        .and_then(|snap| current_saved_id(paths, &snap.tokens));
+    let snapshot = load_snapshot(paths, false)?;
+    let current_saved_id = current_saved_id(paths, &snapshot.tokens);
     let mut ctx = ListCtx::new(paths, true, false, false);
     if json {
         ctx.use_color = false;
     }
-    let empty_labels = Labels::new();
-    let labels = snapshot
-        .as_ref()
-        .map(|snap| &snap.labels)
-        .unwrap_or(&empty_labels);
-    let empty_tokens = BTreeMap::new();
-    let tokens_map = snapshot
-        .as_ref()
-        .map(|snap| &snap.tokens)
-        .unwrap_or(&empty_tokens);
+    let labels = &snapshot.labels;
+    let tokens_map = &snapshot.tokens;
     let current_entry = make_current(paths, current_saved_id.as_deref(), labels, tokens_map, &ctx);
     if json {
         return print_current_status_json(current_entry);
@@ -729,10 +763,7 @@ fn status_all_profiles(paths: &Paths, json: bool, show_errors: bool) -> Result<(
 
     let mut current_visible = None;
     if let Some(entry) = current_entry {
-        let current_is_api = read_tokens_opt(&paths.auth)
-            .map(|tokens| is_api_key_profile(&tokens))
-            .unwrap_or(false);
-        if current_is_api {
+        if entry.is_api_key {
             hidden_api_count += 1;
         } else if !show_errors && entry.error_summary.is_some() {
             hidden_error_count += 1;
@@ -761,6 +792,16 @@ fn status_all_profiles(paths: &Paths, json: bool, show_errors: bool) -> Result<(
     }
 
     let mut lines = Vec::new();
+    if !show_errors && let Some(err) = ctx.base_url_error.as_deref() {
+        lines.push(format_error(err));
+        if current_visible.is_some()
+            || !list_entries.is_empty()
+            || hidden_api_count > 0
+            || hidden_error_count > 0
+        {
+            push_separator(&mut lines, true);
+        }
+    }
     if let Some(entry) = current_visible {
         lines.extend(render_entries(&[entry], &ctx, true));
         if !list_entries.is_empty() {
@@ -805,8 +846,6 @@ pub(crate) struct ProfilesIndex {
     #[serde(default = "profiles_index_version")]
     version: u8,
     #[serde(default)]
-    default_profile_id: Option<String>,
-    #[serde(default)]
     profiles: BTreeMap<String, ProfileIndexEntry>,
 }
 
@@ -814,7 +853,6 @@ impl Default for ProfilesIndex {
     fn default() -> Self {
         Self {
             version: PROFILES_INDEX_VERSION,
-            default_profile_id: None,
             profiles: BTreeMap::new(),
         }
     }
@@ -844,15 +882,26 @@ fn profiles_index_version() -> u8 {
     PROFILES_INDEX_VERSION
 }
 
+fn has_legacy_schema(contents: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(contents)
+        .ok()
+        .and_then(|value| value.as_object().cloned())
+        .map(|obj| {
+            obj.contains_key("last_used")
+                || obj.contains_key("active_profile_id")
+                || obj.contains_key("update_cache")
+                || obj.contains_key("default_profile_id")
+        })
+        .unwrap_or(false)
+}
+
 pub(crate) fn read_profiles_index(paths: &Paths) -> Result<ProfilesIndex, String> {
     if !paths.profiles_index.exists() {
         return Ok(ProfilesIndex::default());
     }
     let contents = fs::read_to_string(&paths.profiles_index)
         .map_err(|err| crate::msg2(PROFILE_ERR_READ_INDEX, paths.profiles_index.display(), err))?;
-    let had_legacy_schema = contents.contains("\"last_used\"")
-        || contents.contains("\"active_profile_id\"")
-        || contents.contains("\"update_cache\"");
+    let had_legacy_schema = has_legacy_schema(&contents);
     let mut index: ProfilesIndex = serde_json::from_str(&contents).map_err(|_| {
         crate::msg1(
             PROFILE_ERR_INDEX_INVALID_JSON,
@@ -883,7 +932,7 @@ pub(crate) fn read_profiles_index_relaxed(paths: &Paths) -> ProfilesIndex {
 pub(crate) fn write_profiles_index(paths: &Paths, index: &ProfilesIndex) -> Result<(), String> {
     let json = serde_json::to_string_pretty(index)
         .map_err(|err| crate::msg1(PROFILE_ERR_SERIALIZE_INDEX, err))?;
-    write_atomic(&paths.profiles_index, format!("{json}\n").as_bytes())
+    crate::common::write_atomic_private(&paths.profiles_index, format!("{json}\n").as_bytes())
         .map_err(|err| crate::msg1(PROFILE_ERR_WRITE_INDEX, err))
 }
 
@@ -902,9 +951,7 @@ pub(crate) fn repair_profiles_metadata(paths: &Paths) -> Result<Vec<String>, Str
         let contents = fs::read_to_string(&paths.profiles_index).map_err(|err| {
             crate::msg2(PROFILE_ERR_READ_INDEX, paths.profiles_index.display(), err)
         })?;
-        let had_legacy_schema = contents.contains("\"last_used\"")
-            || contents.contains("\"active_profile_id\"")
-            || contents.contains("\"update_cache\"");
+        let had_legacy_schema = has_legacy_schema(&contents);
         match serde_json::from_str::<ProfilesIndex>(&contents) {
             Ok(mut index) => {
                 if index.version < PROFILES_INDEX_VERSION {
@@ -936,7 +983,6 @@ pub(crate) fn repair_profiles_metadata(paths: &Paths) -> Result<Vec<String>, Str
 
     let ids = collect_profile_ids(&paths.profiles)?;
     let before_entries = index.profiles.len();
-    let had_default = index.default_profile_id.is_some();
 
     prune_profiles_index(&mut index, &paths.profiles)?;
     let pruned = before_entries.saturating_sub(index.profiles.len());
@@ -946,10 +992,6 @@ pub(crate) fn repair_profiles_metadata(paths: &Paths) -> Result<Vec<String>, Str
             "Pruned {pruned} stale profile index {}",
             if pruned == 1 { "entry" } else { "entries" }
         ));
-    }
-    if had_default && index.default_profile_id.is_none() {
-        should_write = true;
-        repairs.push("Cleared stale default profile".to_string());
     }
 
     let mut indexed = 0usize;
@@ -997,13 +1039,6 @@ fn next_profiles_index_backup_path(path: &Path) -> PathBuf {
 fn prune_profiles_index(index: &mut ProfilesIndex, profiles_dir: &Path) -> Result<(), String> {
     let ids = collect_profile_ids(profiles_dir)?;
     index.profiles.retain(|id, _| ids.contains(id));
-    if index
-        .default_profile_id
-        .as_ref()
-        .is_some_and(|id| !ids.contains(id))
-    {
-        index.default_profile_id = None;
-    }
     Ok(())
 }
 
@@ -1274,7 +1309,6 @@ pub fn load_profile_tokens_map(
     paths: &Paths,
 ) -> Result<BTreeMap<String, Result<Tokens, String>>, String> {
     let mut map = BTreeMap::new();
-    let mut removed_ids: Vec<String> = Vec::new();
     for path in profile_files(&paths.profiles)? {
         let Some(stem) = profile_id_from_path(&path) else {
             continue;
@@ -1284,31 +1318,9 @@ pub fn load_profile_tokens_map(
                 map.insert(stem, Ok(tokens));
             }
             Err(err) => {
-                let id = stem.clone();
-                if let Err(remove_err) = fs::remove_file(&path) {
-                    let message =
-                        crate::msg2(PROFILE_ERR_REMOVE_INVALID, path.display(), remove_err);
-                    map.insert(id, Err(message));
-                } else {
-                    removed_ids.push(id);
-                    let summary = normalize_error(&err);
-                    eprintln!(
-                        "{}",
-                        format_warning(
-                            &crate::msg2(PROFILE_MSG_REMOVED_INVALID, path.display(), summary),
-                            use_color_stderr()
-                        )
-                    );
-                }
+                map.insert(stem, Err(normalize_error(&err)));
             }
         }
-    }
-    if !removed_ids.is_empty() {
-        let mut index = read_profiles_index_relaxed(paths);
-        for id in &removed_ids {
-            index.profiles.remove(id);
-        }
-        let _ = write_profiles_index(paths, &index);
     }
     Ok(map)
 }
@@ -1522,9 +1534,6 @@ fn rename_profile_id(
     if let Some(entry) = profiles_index.profiles.remove(from) {
         profiles_index.profiles.insert(desired.clone(), entry);
     }
-    if profiles_index.default_profile_id.as_deref() == Some(from) {
-        profiles_index.default_profile_id = Some(desired.clone());
-    }
     Ok(desired)
 }
 
@@ -1551,6 +1560,12 @@ pub(crate) fn sync_current(paths: &Paths, index: &mut ProfilesIndex) -> Result<(
 
 fn sync_profile(paths: &Paths, target: &Path) -> Result<(), String> {
     copy_atomic(&paths.auth, target).map_err(|err| crate::msg1(PROFILE_ERR_SYNC_CURRENT, err))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(target, fs::Permissions::from_mode(0o600))
+            .map_err(|err| crate::msg1(PROFILE_ERR_SYNC_CURRENT, err))?;
+    }
     Ok(())
 }
 
@@ -1579,18 +1594,14 @@ pub(crate) fn load_snapshot(paths: &Paths, strict_labels: bool) -> Result<Snapsh
 pub(crate) fn unsaved_reason(
     paths: &Paths,
     tokens_map: &BTreeMap<String, Result<Tokens, String>>,
-) -> Result<Option<String>, String> {
-    let Some(tokens) = read_tokens_opt(&paths.auth) else {
-        return Ok(None);
-    };
-    let Some(identity) = extract_profile_identity(&tokens) else {
-        return Ok(None);
-    };
+) -> Option<String> {
+    let tokens = read_tokens_opt(&paths.auth)?;
+    let identity = extract_profile_identity(&tokens)?;
     let candidates = cached_profile_ids(tokens_map, &identity);
     if candidates.is_empty() {
-        return Ok(Some(PROFILE_UNSAVED_NO_MATCH.to_string()));
+        return Some(PROFILE_UNSAVED_NO_MATCH.to_string());
     }
-    Ok(None)
+    None
 }
 
 pub(crate) fn current_saved_id(
@@ -1720,6 +1731,12 @@ fn ordered_profile_ids(snapshot: &Snapshot, current_saved_id: Option<&str>) -> V
 fn copy_profile(source: &Path, dest: &Path, context: &str) -> Result<(), String> {
     copy_atomic(source, dest)
         .map_err(|err| crate::msg3(PROFILE_ERR_COPY_CONTEXT, context, dest.display(), err))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(dest, fs::Permissions::from_mode(0o600))
+            .map_err(|err| crate::msg3(PROFILE_ERR_COPY_CONTEXT, context, dest.display(), err))?;
+    }
     Ok(())
 }
 
@@ -1732,7 +1749,6 @@ fn pick_one(
     action: &str,
     label: Option<&str>,
     id: Option<&str>,
-    default_id: Option<&str>,
     snapshot: &Snapshot,
     candidates: &[Candidate],
 ) -> Result<Candidate, String> {
@@ -1741,12 +1757,8 @@ fn pick_one(
     } else if let Some(id) = id {
         select_by_id(id, candidates)
     } else if !io::stdin().is_terminal() {
-        if let Some(default_id) = default_id {
-            select_by_id(default_id, candidates)
-        } else {
-            require_tty(action)?;
-            unreachable!("require_tty should always return Err in non-interactive mode")
-        }
+        require_tty(action)?;
+        unreachable!("require_tty should always return Err in non-interactive mode")
     } else {
         select_single_profile("", candidates)
     }
@@ -2049,11 +2061,22 @@ fn render_entries(entries: &[Entry], ctx: &ListCtx, allow_plain_spacing: bool) -
         } else {
             entry_lines.push(header);
             entry_lines.push(String::new());
-            entry_lines.extend(entry.details.iter().map(|line| {
+            entry_lines.extend(entry.details.iter().flat_map(|line| {
                 if line.is_empty() {
-                    String::new()
+                    vec![String::new()]
                 } else {
-                    format!(" {line}")
+                    line.lines()
+                        .enumerate()
+                        .map(|(index, part)| {
+                            if part.is_empty() {
+                                String::new()
+                            } else if index == 0 {
+                                format!(" {part}")
+                            } else {
+                                part.to_string()
+                            }
+                        })
+                        .collect::<Vec<_>>()
                 }
             }));
         }
@@ -2104,6 +2127,8 @@ fn make_error(
         is_saved,
         display: info.display,
         details: vec![format_error(message)],
+        warnings: Vec::new(),
+        usage: None,
         error_summary: Some(error_summary(summary_label, message)),
         always_show_details: false,
         is_current,
@@ -2111,32 +2136,139 @@ fn make_error(
 }
 
 fn unavailable_lines(message: &str, use_color: bool) -> Vec<String> {
-    vec![format_usage_unavailable(message, use_color)]
+    let (summary, detail) = usage_message_parts(message);
+    let mut lines = vec![format_usage_unavailable(&summary, use_color)];
+    if let Some(detail) = detail {
+        lines.extend(
+            detail
+                .lines()
+                .filter(|line| !line.is_empty())
+                .map(|line| format!("      {line}")),
+        );
+    }
+    lines
+}
+
+fn plain_error_lines(message: &str, use_color: bool) -> Vec<String> {
+    let mut lines = message.lines();
+    let Some(first) = lines.next() else {
+        return Vec::new();
+    };
+
+    let mut headline = first.to_string();
+    let mut tail: Vec<String> = lines.map(str::to_string).collect();
+    let mut merged_status = false;
+    if let Some(second) = tail.first() {
+        let second = second.trim();
+        if second.starts_with("unexpected status ") {
+            headline = format!("{headline} ({second})");
+            tail.remove(0);
+            merged_status = true;
+        }
+    }
+
+    let mut rendered = vec![format_error(&headline)];
+    rendered.extend(tail.into_iter().enumerate().map(|(index, line)| {
+        let adjusted_index = if merged_status { index + 1 } else { index };
+        let text = if adjusted_index == 0 {
+            line
+        } else {
+            format!(" {line}")
+        };
+        if adjusted_index == 0 {
+            text
+        } else {
+            crate::ui::style_text(&text, use_color, |text| text.dimmed())
+        }
+    }));
+    rendered
+}
+
+fn usage_message_parts(message: &str) -> (String, Option<String>) {
+    let normalized = normalize_error(message);
+    let mut lines = normalized
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty());
+    let summary = lines.next().unwrap_or_default().to_string();
+    let detail_lines: Vec<&str> = lines.collect();
+    let detail = if detail_lines.is_empty() {
+        None
+    } else {
+        Some(detail_lines.join("\n"))
+    };
+    (summary, detail)
+}
+
+#[derive(Clone, Serialize)]
+struct StatusUsageJson {
+    state: &'static str,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    buckets: Vec<crate::usage::UsageSnapshotBucket>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    status_code: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    summary: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    detail: Option<String>,
+}
+
+impl StatusUsageJson {
+    fn ok(buckets: Vec<crate::usage::UsageSnapshotBucket>) -> Self {
+        Self {
+            state: "ok",
+            buckets,
+            status_code: None,
+            summary: None,
+            detail: None,
+        }
+    }
+
+    fn from_message(state: &'static str, status_code: Option<u16>, message: &str) -> Self {
+        let (summary, detail) = usage_message_parts(message);
+        Self {
+            state,
+            buckets: Vec::new(),
+            status_code,
+            summary: Some(summary),
+            detail,
+        }
+    }
+
+    fn from_fetch_error(err: &crate::usage::UsageFetchError) -> Self {
+        Self::from_message("error", err.status_code(), &err.message())
+    }
+
+    fn unavailable(message: &str) -> Self {
+        Self::from_message("unavailable", None, message)
+    }
 }
 
 fn detail_lines(
     tokens: &mut Tokens,
     email: Option<&str>,
     plan: Option<&str>,
-    profile_path: &Path,
     ctx: &ListCtx,
-) -> (Vec<String>, Option<String>, bool) {
+    source_path: &Path,
+) -> (Vec<String>, Option<String>, Option<StatusUsageJson>, bool) {
     let use_color = ctx.use_color;
     let initial_account_id = token_account_id(tokens).map(str::to_string);
     let access_token = tokens.access_token.clone();
     if is_api_key_profile(tokens) {
         if ctx.show_usage {
+            let message = crate::msg2(
+                UI_ERROR_TWO_LINE,
+                USAGE_UNAVAILABLE_API_KEY_TITLE,
+                USAGE_UNAVAILABLE_API_KEY_DETAIL,
+            );
             return (
-                vec![format_error(&crate::msg2(
-                    UI_ERROR_TWO_LINE,
-                    USAGE_UNAVAILABLE_API_KEY_TITLE,
-                    USAGE_UNAVAILABLE_API_KEY_DETAIL,
-                ))],
+                vec![format_error(&message)],
                 None,
+                Some(StatusUsageJson::unavailable(&message)),
                 false,
             );
         }
-        return (Vec::new(), None, false);
+        return (Vec::new(), None, None, false);
     }
     let unavailable_text = usage_unavailable();
     if let Some(message) = profile_error(tokens, email, plan) {
@@ -2145,61 +2277,92 @@ fn detail_lines(
             message == AUTH_ERR_PROFILE_MISSING_EMAIL_PLAN && !missing_access;
         if !missing_identity_only {
             if ctx.show_usage && missing_access && email.is_some() && plan.is_some() {
-                return (unavailable_lines(unavailable_text, use_color), None, false);
+                return (
+                    unavailable_lines(unavailable_text, use_color),
+                    None,
+                    Some(StatusUsageJson::unavailable(unavailable_text)),
+                    false,
+                );
             }
             let details = vec![format_error(message)];
             let summary = Some(error_summary(PROFILE_SUMMARY_ERROR, message));
-            return (details, summary, false);
+            return (
+                details,
+                summary,
+                Some(StatusUsageJson::from_message("error", None, message)),
+                false,
+            );
         }
     }
     if ctx.show_usage {
+        if let Some(err) = ctx.base_url_error.as_deref() {
+            return (
+                vec![format_error(err)],
+                Some(error_summary(PROFILE_SUMMARY_USAGE_ERROR, err)),
+                Some(StatusUsageJson::from_message("error", None, err)),
+                false,
+            );
+        }
         let Some(base_url) = ctx.base_url.as_deref() else {
-            return (Vec::new(), None, false);
+            return (Vec::new(), None, None, false);
         };
         let Some(access_token) = access_token.as_deref() else {
-            return (Vec::new(), None, false);
+            return (Vec::new(), None, None, false);
         };
         let Some(account_id) = initial_account_id.as_deref() else {
-            return (Vec::new(), None, false);
+            return (Vec::new(), None, None, false);
         };
-        match fetch_usage_details(
+        match crate::usage::fetch_usage_status(
             base_url,
             access_token,
             account_id,
             unavailable_text,
             ctx.now,
         ) {
-            Ok(details) => (details, None, false),
+            Ok((details, buckets)) => (details, None, Some(StatusUsageJson::ok(buckets)), false),
             Err(err) if err.status_code() == Some(401) => {
-                match refresh_profile_tokens(profile_path, tokens) {
+                match crate::auth::refresh_profile_tokens(source_path, tokens) {
                     Ok(()) => {
                         let Some(access_token) = tokens.access_token.as_deref() else {
-                            let message = PROFILE_ERR_REFRESHED_ACCESS_MISSING;
+                            let message = AUTH_ERR_INCOMPLETE_ACCOUNT;
                             return (
                                 vec![format_error(message)],
                                 Some(error_summary(PROFILE_SUMMARY_AUTH_ERROR, message)),
+                                Some(StatusUsageJson::from_message("error", None, message)),
                                 true,
                             );
                         };
-                        let Some(account_id) = token_account_id(tokens) else {
-                            let message = AUTH_ERR_PROFILE_MISSING_ACCOUNT;
+                        let Some(account_id) =
+                            token_account_id(tokens).or(initial_account_id.as_deref())
+                        else {
+                            let message = AUTH_ERR_INCOMPLETE_ACCOUNT;
                             return (
                                 vec![format_error(message)],
                                 Some(error_summary(PROFILE_SUMMARY_AUTH_ERROR, message)),
+                                Some(StatusUsageJson::from_message("error", None, message)),
                                 true,
                             );
                         };
-                        match fetch_usage_details(
+                        match crate::usage::fetch_usage_status(
                             base_url,
                             access_token,
                             account_id,
                             unavailable_text,
                             ctx.now,
                         ) {
-                            Ok(details) => (details, None, true),
+                            Ok((details, buckets)) => {
+                                (details, None, Some(StatusUsageJson::ok(buckets)), true)
+                            }
+                            Err(err) if err.status_code() == Some(401) => (
+                                plain_error_lines(&err.plain_message(), use_color),
+                                Some(error_summary(PROFILE_SUMMARY_AUTH_ERROR, &err.message())),
+                                Some(StatusUsageJson::from_fetch_error(&err)),
+                                true,
+                            ),
                             Err(err) => (
-                                vec![format_error(&err.message())],
+                                plain_error_lines(&err.plain_message(), use_color),
                                 Some(error_summary(PROFILE_SUMMARY_USAGE_ERROR, &err.message())),
+                                Some(StatusUsageJson::from_fetch_error(&err)),
                                 true,
                             ),
                         }
@@ -2207,18 +2370,20 @@ fn detail_lines(
                     Err(err) => (
                         vec![format_error(&err)],
                         Some(error_summary(PROFILE_SUMMARY_AUTH_ERROR, &err)),
+                        Some(StatusUsageJson::from_message("error", None, &err)),
                         false,
                     ),
                 }
             }
             Err(err) => (
-                vec![format_error(&err.message())],
+                plain_error_lines(&err.plain_message(), use_color),
                 Some(error_summary(PROFILE_SUMMARY_USAGE_ERROR, &err.message())),
+                Some(StatusUsageJson::from_fetch_error(&err)),
                 false,
             ),
         }
     } else {
-        (Vec::new(), None, false)
+        (Vec::new(), None, None, false)
     }
 }
 
@@ -2266,12 +2431,12 @@ fn make_entry(
     let label_value = label.clone();
     let info = profile_info(Some(&tokens), label, is_current, use_color);
     let is_api_key = is_api_key_profile(&tokens);
-    let (details, summary, _) = detail_lines(
+    let (details, summary, usage, _) = detail_lines(
         &mut tokens,
         info.email.as_deref(),
         info.plan.as_deref(),
-        profile_path,
         ctx,
+        profile_path,
     );
     Entry {
         id: profile_id_from_path(profile_path),
@@ -2282,6 +2447,8 @@ fn make_entry(
         is_saved: true,
         display: info.display,
         details,
+        warnings: Vec::new(),
+        usage,
         error_summary: summary,
         always_show_details: info.is_free,
         is_current,
@@ -2398,26 +2565,34 @@ fn make_current(
     let is_api_key = is_api_key_profile(&tokens);
     let can_save = is_profile_ready(&tokens);
     let is_unsaved = effective_saved_id.is_none() && can_save;
-    let (mut details, summary, refreshed) = detail_lines(
+    let (mut details, mut summary, mut usage, refreshed) = detail_lines(
         &mut tokens,
         info.email.as_deref(),
         info.plan.as_deref(),
-        &ctx.auth_path,
         ctx,
+        &paths.auth,
     );
-
-    if refreshed && let Some(id) = effective_saved_id {
-        let profile_path = ctx.profiles_dir.join(format!("{id}.json"));
-        if profile_path.is_file()
-            && let Err(err) = copy_atomic(&ctx.auth_path, &profile_path)
-        {
-            let warning = format_warning(&normalize_error(&err), use_color_stderr());
-            eprintln!("{warning}");
+    if refreshed && let Some(saved_id) = effective_saved_id {
+        let target = profile_path_for_id(&ctx.profiles_dir, saved_id);
+        if let Err(err) = sync_profile(paths, &target) {
+            details = vec![format_error(&err)];
+            summary = Some(error_summary(PROFILE_SUMMARY_ERROR, &err));
+            usage = Some(StatusUsageJson::from_message("error", None, &err));
         }
     }
 
+    let warnings = if is_unsaved {
+        format_unsaved_warning(false)
+    } else {
+        Vec::new()
+    };
+
     if is_unsaved {
-        details.extend(format_unsaved_warning(use_color));
+        if use_color {
+            details.extend(format_unsaved_warning(true));
+        } else {
+            details.extend(warnings.clone());
+        }
     }
 
     Some(Entry {
@@ -2429,6 +2604,8 @@ fn make_current(
         is_saved: effective_saved_id.is_some(),
         display: info.display,
         details,
+        warnings,
+        usage,
         error_summary: summary,
         always_show_details: is_unsaved || (plan_is_free && !ctx.show_usage),
         is_current: true,
@@ -2436,31 +2613,41 @@ fn make_current(
 }
 
 fn error_summary(label: &str, message: &str) -> String {
-    format!("{label}: {}", normalize_error(message))
+    let (summary, _) = usage_message_parts(message);
+    format!("{label}: {summary}")
 }
 
 struct ListCtx {
     base_url: Option<String>,
+    base_url_error: Option<String>,
     now: DateTime<Local>,
     show_usage: bool,
     show_current_marker: bool,
     show_id: bool,
     use_color: bool,
     profiles_dir: PathBuf,
-    auth_path: PathBuf,
 }
 
 impl ListCtx {
     fn new(paths: &Paths, show_usage: bool, show_current_marker: bool, show_id: bool) -> Self {
+        let (base_url, base_url_error) = if show_usage {
+            match read_base_url(paths) {
+                Ok(url) => (Some(url), None),
+                Err(err) => (None, Some(err)),
+            }
+        } else {
+            (None, None)
+        };
+
         Self {
-            base_url: show_usage.then(|| read_base_url(paths)),
+            base_url,
+            base_url_error,
             now: Local::now(),
             show_usage,
             show_current_marker,
             show_id,
             use_color: use_color_stdout(),
             profiles_dir: paths.profiles.clone(),
-            auth_path: paths.auth.clone(),
         }
     }
 }
@@ -2475,6 +2662,8 @@ struct Entry {
     is_saved: bool,
     display: String,
     details: Vec<String>,
+    warnings: Vec<String>,
+    usage: Option<StatusUsageJson>,
     error_summary: Option<String>,
     always_show_details: bool,
     is_current: bool,
@@ -2506,8 +2695,9 @@ struct StatusProfileJson {
     is_current: bool,
     is_saved: bool,
     is_api_key: bool,
-    display: String,
-    details: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    warnings: Vec<String>,
+    usage: Option<StatusUsageJson>,
     error: Option<String>,
 }
 
@@ -2538,36 +2728,6 @@ fn print_list_json(entries: &[Entry]) -> Result<(), String> {
     Ok(())
 }
 
-fn strip_ansi_sequences(input: &str) -> String {
-    if !input.contains('\u{1b}') {
-        return input.to_string();
-    }
-
-    let mut out = String::with_capacity(input.len());
-    let bytes = input.as_bytes();
-    let mut i = 0usize;
-    while i < bytes.len() {
-        if bytes[i] == 0x1b {
-            i += 1;
-            if i < bytes.len() && bytes[i] == b'[' {
-                i += 1;
-                while i < bytes.len() {
-                    let b = bytes[i];
-                    i += 1;
-                    if (0x40..=0x7e).contains(&b) {
-                        break;
-                    }
-                }
-            }
-            continue;
-        }
-        let ch = input[i..].chars().next().expect("valid utf-8 char");
-        out.push(ch);
-        i += ch.len_utf8();
-    }
-    out
-}
-
 fn status_profile_json(entry: Entry) -> StatusProfileJson {
     StatusProfileJson {
         id: entry.id,
@@ -2577,15 +2737,15 @@ fn status_profile_json(entry: Entry) -> StatusProfileJson {
         is_current: entry.is_current,
         is_saved: entry.is_saved,
         is_api_key: entry.is_api_key,
-        display: strip_ansi_sequences(&entry.display),
-        details: entry
-            .details
+        warnings: entry
+            .warnings
             .into_iter()
-            .map(|detail| strip_ansi_sequences(&detail))
+            .map(|warning| crate::ui::strip_ansi(&warning))
             .collect(),
+        usage: entry.usage,
         error: entry
             .error_summary
-            .map(|error| strip_ansi_sequences(&error)),
+            .map(|error| crate::ui::strip_ansi(&error)),
     }
 }
 
@@ -2899,6 +3059,28 @@ mod tests {
     }
 
     #[test]
+    fn read_profiles_index_does_not_rewrite_when_legacy_strings_only_appear_in_values() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = make_paths(dir.path());
+        fs::create_dir_all(&paths.profiles).unwrap();
+        let raw = serde_json::json!({
+            "version": PROFILES_INDEX_VERSION,
+            "profiles": {
+                "id": {
+                    "label": "default_profile_id update_cache active_profile_id last_used",
+                    "is_api_key": false
+                }
+            }
+        })
+        .to_string();
+        fs::write(&paths.profiles_index, &raw).unwrap();
+
+        let _ = read_profiles_index(&paths).unwrap();
+        let after = fs::read_to_string(&paths.profiles_index).unwrap();
+        assert_eq!(after, raw);
+    }
+
+    #[test]
     fn profiles_index_prunes_missing_profiles() {
         let dir = tempfile::tempdir().expect("tempdir");
         let paths = make_paths(dir.path());
@@ -2946,8 +3128,9 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let paths = make_paths(dir.path());
         fs::create_dir_all(&paths.profiles).unwrap();
+        let bad_path = paths.profiles.join("bad.json");
         write_profile(&paths, "valid", "acct", "a@b.com", "pro");
-        fs::write(paths.profiles.join("bad.json"), "not-json").unwrap();
+        fs::write(&bad_path, "not-json").unwrap();
         let index = serde_json::json!({
             "version": 1,
             "active_profile_id": null,
@@ -2966,6 +3149,12 @@ mod tests {
         .unwrap();
         let map = load_profile_tokens_map(&paths).unwrap();
         assert!(map.contains_key("valid"));
+        let bad = map.get("bad").expect("bad entry retained");
+        assert!(bad.is_err());
+        assert!(bad_path.is_file());
+
+        let index_contents = fs::read_to_string(&paths.profiles_index).unwrap();
+        assert!(index_contents.contains("\"bad\""));
     }
 
     #[test]
@@ -3000,6 +3189,8 @@ mod tests {
         fs::set_permissions(&paths.profiles, perms).unwrap();
         let map = load_profile_tokens_map(&paths).unwrap();
         assert!(map.contains_key("bad"));
+        fs::set_permissions(&paths.profiles, fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(bad_path.is_file());
     }
 
     #[test]
@@ -3044,23 +3235,75 @@ mod tests {
             is_saved: true,
             display: "Display".to_string(),
             details: vec!["detail".to_string()],
+            warnings: Vec::new(),
+            usage: None,
             error_summary: None,
             always_show_details: true,
             is_current: false,
         };
         let ctx = ListCtx {
             base_url: None,
+            base_url_error: None,
             now: chrono::Local::now(),
             show_usage: false,
             show_current_marker: false,
             show_id: true,
             use_color: false,
             profiles_dir: PathBuf::new(),
-            auth_path: PathBuf::new(),
         };
         let lines = render_entries(&[entry], &ctx, true);
         assert!(!lines.is_empty());
         push_separator(&mut vec!["a".to_string()], true);
+    }
+
+    #[test]
+    fn render_entries_preserves_ansi_display_in_color_mode() {
+        colored::control::set_override(true);
+        let entry = Entry {
+            id: Some("alpha@example.com-team".to_string()),
+            label: Some("alpha".to_string()),
+            email: Some("alpha@example.com".to_string()),
+            plan: Some("team".to_string()),
+            is_api_key: false,
+            is_saved: true,
+            display: "\u{1b}[32malpha@example.com\u{1b}[0m".to_string(),
+            details: Vec::new(),
+            warnings: Vec::new(),
+            usage: None,
+            error_summary: None,
+            always_show_details: false,
+            is_current: false,
+        };
+        let ctx = ListCtx {
+            base_url: None,
+            base_url_error: None,
+            now: chrono::Local::now(),
+            show_usage: false,
+            show_current_marker: false,
+            show_id: false,
+            use_color: true,
+            profiles_dir: PathBuf::new(),
+        };
+        let lines = render_entries(&[entry], &ctx, true);
+        colored::control::unset_override();
+
+        assert!(!lines.is_empty());
+        assert!(lines[0].contains("\u{1b}[32m"));
+        assert_eq!(crate::ui::strip_ansi(&lines[0]), "alpha@example.com");
+    }
+
+    #[test]
+    fn plain_error_lines_merges_unexpected_status_into_summary() {
+        let lines = plain_error_lines(
+            "deactivated_workspace\nunexpected status 402 Payment Required\nURL: http://localhost/backend-api/wham/usage",
+            false,
+        );
+
+        assert_eq!(
+            lines[0],
+            "Error: deactivated_workspace (unexpected status 402 Payment Required)"
+        );
+        assert_eq!(lines[1], " URL: http://localhost/backend-api/wham/usage");
     }
 
     #[test]
@@ -3075,6 +3318,8 @@ mod tests {
                 is_saved: true,
                 display: "One".to_string(),
                 details: vec!["5 hour: 10% left".to_string()],
+                warnings: Vec::new(),
+                usage: None,
                 error_summary: None,
                 always_show_details: true,
                 is_current: false,
@@ -3088,6 +3333,8 @@ mod tests {
                 is_saved: true,
                 display: "Two".to_string(),
                 details: vec!["5 hour: 20% left".to_string()],
+                warnings: Vec::new(),
+                usage: None,
                 error_summary: None,
                 always_show_details: true,
                 is_current: false,
@@ -3095,13 +3342,13 @@ mod tests {
         ];
         let ctx = ListCtx {
             base_url: None,
+            base_url_error: None,
             now: chrono::Local::now(),
             show_usage: true,
             show_current_marker: false,
             show_id: false,
             use_color: false,
             profiles_dir: PathBuf::new(),
-            auth_path: PathBuf::new(),
         };
         let lines = render_entries(&entries, &ctx, true);
         let first_profile_last_line = 2;
@@ -3111,7 +3358,7 @@ mod tests {
 
     #[test]
     fn strip_ansi_sequences_removes_color_codes() {
-        assert_eq!(strip_ansi_sequences("\u{1b}[31mtext\u{1b}[0m"), "text");
+        assert_eq!(crate::ui::strip_ansi("\u{1b}[31mtext\u{1b}[0m"), "text");
     }
 
     #[test]
@@ -3145,7 +3392,7 @@ mod tests {
         fs::create_dir_all(&paths.profiles).unwrap();
         write_auth(&paths.auth, "acct", "a@b.com", "pro", "acc", "ref");
         crate::ensure_paths(&paths).unwrap();
-        save_profile(&paths, Some("team".to_string())).unwrap();
+        save_profile(&paths, Some("team".to_string()), false).unwrap();
         list_profiles(&paths, false, false).unwrap();
         status_profiles(&paths, false, None, None, false, false).unwrap();
         status_profiles(&paths, true, None, None, false, false).unwrap();
@@ -3158,8 +3405,8 @@ mod tests {
         fs::create_dir_all(&paths.profiles).unwrap();
         write_auth(&paths.auth, "acct", "a@b.com", "pro", "acc", "ref");
         crate::ensure_paths(&paths).unwrap();
-        save_profile(&paths, Some("team".to_string())).unwrap();
-        delete_profile(&paths, true, Some("team".to_string()), vec![]).unwrap();
+        save_profile(&paths, Some("team".to_string()), false).unwrap();
+        delete_profile(&paths, true, Some("team".to_string()), vec![], false).unwrap();
     }
 
     #[test]
@@ -3178,8 +3425,8 @@ mod tests {
         );
         crate::ensure_paths(&paths).unwrap();
 
-        save_profile(&paths, None).unwrap();
-        save_profile(&paths, None).unwrap();
+        save_profile(&paths, None, false).unwrap();
+        save_profile(&paths, None, false).unwrap();
 
         let ids = collect_profile_ids(&paths.profiles).unwrap();
         assert_eq!(ids.len(), 1);
@@ -3202,7 +3449,7 @@ mod tests {
             "acc",
             "ref",
         );
-        save_profile(&paths, None).unwrap();
+        save_profile(&paths, None, false).unwrap();
 
         write_auth_with_user(
             &paths.auth,
@@ -3213,7 +3460,7 @@ mod tests {
             "acc",
             "ref",
         );
-        save_profile(&paths, None).unwrap();
+        save_profile(&paths, None, false).unwrap();
 
         let ids = collect_profile_ids(&paths.profiles).unwrap();
         assert_eq!(ids.len(), 2);
@@ -3237,7 +3484,7 @@ mod tests {
             "acc",
             "ref",
         );
-        save_profile(&paths, None).unwrap();
+        save_profile(&paths, None, false).unwrap();
 
         write_auth_with_user(
             &paths.auth,
@@ -3248,7 +3495,7 @@ mod tests {
             "acc",
             "ref",
         );
-        save_profile(&paths, None).unwrap();
+        save_profile(&paths, None, false).unwrap();
 
         let ids = collect_profile_ids(&paths.profiles).unwrap();
         assert_eq!(ids.len(), 2);
