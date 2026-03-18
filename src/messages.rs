@@ -88,8 +88,6 @@ pub const PROFILE_ERR_LABEL_EMPTY: &str = "Error: Label cannot be empty.";
 pub const PROFILE_MSG_NOT_FOUND: &str = "Selected profile not found. {}";
 pub const PROFILE_ERR_ID_NOT_FOUND: &str = "Error: Profile {} not found";
 pub const PROFILE_UNSAVED_NO_MATCH: &str = "no saved profile matches auth.json";
-pub const PROFILE_STATUS_API_HIDDEN: &str = "+ {} API profiles hidden";
-pub const PROFILE_STATUS_ERROR_HIDDEN: &str = "+ {} errored profiles hidden (use `--show-errors`)";
 
 pub const PROFILE_SUMMARY_ERROR: &str = "Error";
 pub const PROFILE_SUMMARY_AUTH_ERROR: &str = "Auth error";

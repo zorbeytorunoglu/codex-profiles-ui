@@ -26,10 +26,9 @@ use crate::{
     PROFILE_MSG_LABEL_SET, PROFILE_MSG_LOADED_WITH, PROFILE_MSG_NOT_FOUND, PROFILE_MSG_SAVED,
     PROFILE_MSG_SAVED_WITH, PROFILE_PROMPT_CANCEL, PROFILE_PROMPT_CONTINUE_WITHOUT_SAVING,
     PROFILE_PROMPT_DELETE_MANY, PROFILE_PROMPT_DELETE_ONE, PROFILE_PROMPT_DELETE_SELECTED,
-    PROFILE_PROMPT_SAVE_AND_CONTINUE, PROFILE_STATUS_API_HIDDEN, PROFILE_STATUS_ERROR_HIDDEN,
-    PROFILE_SUMMARY_AUTH_ERROR, PROFILE_SUMMARY_ERROR, PROFILE_SUMMARY_FILE_MISSING,
-    PROFILE_SUMMARY_USAGE_ERROR, PROFILE_UNSAVED_NO_MATCH, PROFILE_WARN_CURRENT_NOT_SAVED_REASON,
-    UI_ERROR_PREFIX, UI_ERROR_TWO_LINE,
+    PROFILE_PROMPT_SAVE_AND_CONTINUE, PROFILE_SUMMARY_AUTH_ERROR, PROFILE_SUMMARY_ERROR,
+    PROFILE_SUMMARY_FILE_MISSING, PROFILE_SUMMARY_USAGE_ERROR, PROFILE_UNSAVED_NO_MATCH,
+    PROFILE_WARN_CURRENT_NOT_SAVED_REASON, UI_ERROR_PREFIX, UI_ERROR_TWO_LINE,
 };
 use crate::{
     AuthFile, ProfileIdentityKey, Tokens, extract_email_and_plan, extract_profile_identity,
@@ -626,10 +625,9 @@ pub fn status_profiles(
     label: Option<String>,
     id: Option<String>,
     json: bool,
-    show_errors: bool,
 ) -> Result<(), String> {
     if all {
-        return status_all_profiles(paths, json, show_errors);
+        return status_all_profiles(paths, json);
     }
 
     if label.is_some() || id.is_some() {
@@ -713,7 +711,7 @@ fn status_selected_profile(
     Ok(())
 }
 
-fn status_all_profiles(paths: &Paths, json: bool, show_errors: bool) -> Result<(), String> {
+fn status_all_profiles(paths: &Paths, json: bool) -> Result<(), String> {
     let snapshot = load_snapshot(paths, false)?;
     let current_saved_id = current_saved_id(paths, &snapshot.tokens);
     let mut ctx = ListCtx::new(paths, true, true, false);
@@ -727,21 +725,7 @@ fn status_all_profiles(paths: &Paths, json: bool, show_errors: bool) -> Result<(
         .filter(|id| current_saved_id.as_deref() != Some(id.as_str()))
         .collect();
 
-    let mut hidden_api_count = 0usize;
-    let mut hidden_error_count = 0usize;
-    let mut list_entries = Vec::new();
-    let non_api_ids: Vec<String> = filtered
-        .into_iter()
-        .filter(|id| {
-            if is_api_saved_profile(id, &snapshot) {
-                hidden_api_count += 1;
-                false
-            } else {
-                true
-            }
-        })
-        .collect();
-    let (current_entry, non_current_entries) = rayon::join(
+    let (current_entry, list_entries) = rayon::join(
         || {
             make_current(
                 paths,
@@ -751,85 +735,41 @@ fn status_all_profiles(paths: &Paths, json: bool, show_errors: bool) -> Result<(
                 &ctx,
             )
         },
-        || make_entries(&non_api_ids, &snapshot, None, &ctx),
+        || make_entries(&filtered, &snapshot, None, &ctx),
     );
-    for entry in non_current_entries {
-        if !show_errors && entry.error_summary.is_some() {
-            hidden_error_count += 1;
-        } else {
-            list_entries.push(entry);
-        }
-    }
-
-    let mut current_visible = None;
-    if let Some(entry) = current_entry {
-        if entry.is_api_key {
-            hidden_api_count += 1;
-        } else if !show_errors && entry.error_summary.is_some() {
-            hidden_error_count += 1;
-        } else {
-            current_visible = Some(entry);
-        }
-    }
 
     if json {
         let mut profiles = Vec::new();
-        if let Some(entry) = current_visible {
+        if let Some(entry) = current_entry {
             profiles.push(entry);
         }
         profiles.extend(list_entries);
-        return print_all_status_json(profiles, hidden_api_count, hidden_error_count);
+        return print_all_status_json(profiles);
     }
 
-    if current_visible.is_none()
-        && list_entries.is_empty()
-        && hidden_api_count == 0
-        && hidden_error_count == 0
-    {
+    if current_entry.is_none() && list_entries.is_empty() {
         let message = format_no_profiles(paths, ctx.use_color);
         print_output_block(&message);
         return Ok(());
     }
 
     let mut lines = Vec::new();
-    if !show_errors && let Some(err) = ctx.base_url_error.as_deref() {
+    if let Some(err) = ctx.base_url_error.as_deref() {
         lines.push(format_error(err));
-        if current_visible.is_some()
-            || !list_entries.is_empty()
-            || hidden_api_count > 0
-            || hidden_error_count > 0
-        {
+        if current_entry.is_some() || !list_entries.is_empty() {
             push_separator(&mut lines, true);
         }
     }
-    if let Some(entry) = current_visible {
+    if let Some(entry) = current_entry {
         lines.extend(render_entries(&[entry], &ctx, true));
         if !list_entries.is_empty() {
             push_separator(&mut lines, true);
             lines.push(String::new());
-        } else if hidden_api_count > 0 || hidden_error_count > 0 {
-            push_separator(&mut lines, true);
         }
     }
 
     if !list_entries.is_empty() {
         lines.extend(render_entries(&list_entries, &ctx, true));
-        if hidden_api_count > 0 || hidden_error_count > 0 {
-            push_separator(&mut lines, true);
-        }
-    }
-
-    if hidden_api_count > 0 {
-        let hidden_message = crate::msg1(PROFILE_STATUS_API_HIDDEN, hidden_api_count);
-        lines.push(style_text(&hidden_message, ctx.use_color, |text| {
-            text.dimmed().italic()
-        }));
-    }
-    if hidden_error_count > 0 {
-        let hidden_message = crate::msg1(PROFILE_STATUS_ERROR_HIDDEN, hidden_error_count);
-        lines.push(style_text(&hidden_message, ctx.use_color, |text| {
-            text.dimmed().italic()
-        }));
     }
 
     let output = lines.join("\n");
@@ -2098,9 +2038,7 @@ fn push_separator(lines: &mut Vec<String>, allow_plain_spacing: bool) {
 }
 
 fn current_profile_marker(use_color: bool) -> String {
-    style_text(" <- current profile", use_color, |text| {
-        text.dimmed().italic()
-    })
+    style_text(" <- active", use_color, |text| text.dimmed().italic())
 }
 
 fn format_profile_id_suffix(id: &str, use_color: bool) -> String {
@@ -2514,20 +2452,6 @@ fn usage_concurrency() -> usize {
         .unwrap_or(DEFAULT_USAGE_CONCURRENCY)
 }
 
-fn is_api_saved_profile(id: &str, snapshot: &Snapshot) -> bool {
-    if let Some(Ok(tokens)) = snapshot.tokens.get(id)
-        && is_api_key_profile(tokens)
-    {
-        return true;
-    }
-    snapshot
-        .index
-        .profiles
-        .get(id)
-        .map(|entry| entry.is_api_key)
-        .unwrap_or(false)
-}
-
 fn make_current(
     paths: &Paths,
     current_saved_id: Option<&str>,
@@ -2698,14 +2622,28 @@ struct StatusProfileJson {
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     warnings: Vec<String>,
     usage: Option<StatusUsageJson>,
-    error: Option<String>,
+    error: Option<StatusErrorJson>,
+}
+
+#[derive(Serialize)]
+struct StatusErrorJson {
+    summary: StatusErrorSummaryJson,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    status_code: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    detail: Option<String>,
+}
+
+#[derive(Serialize)]
+struct StatusErrorSummaryJson {
+    message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    response: Option<serde_json::Value>,
 }
 
 #[derive(Serialize)]
 struct AllStatusJson {
     profiles: Vec<StatusProfileJson>,
-    hidden_api_profiles: usize,
-    hidden_error_profiles: usize,
 }
 
 fn print_list_json(entries: &[Entry]) -> Result<(), String> {
@@ -2728,7 +2666,120 @@ fn print_list_json(entries: &[Entry]) -> Result<(), String> {
     Ok(())
 }
 
+fn status_error_summary_json(summary: String) -> StatusErrorSummaryJson {
+    let Some((start, end, response)) = extract_embedded_json_object(&summary) else {
+        return StatusErrorSummaryJson {
+            message: summary,
+            response: None,
+        };
+    };
+
+    StatusErrorSummaryJson {
+        message: strip_embedded_json_segment(&summary, start, end),
+        response: Some(response),
+    }
+}
+
+fn extract_embedded_json_object(summary: &str) -> Option<(usize, usize, serde_json::Value)> {
+    for (start, ch) in summary.char_indices() {
+        if ch != '{' {
+            continue;
+        }
+        let Some(end) = find_json_object_end(summary, start) else {
+            continue;
+        };
+        let candidate = &summary[start..end];
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(candidate) else {
+            continue;
+        };
+        return Some((start, end, value));
+    }
+    None
+}
+
+fn find_json_object_end(text: &str, start: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+
+    for (offset, ch) in text[start..].char_indices() {
+        let idx = start + offset;
+        if in_string {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            match ch {
+                '\\' => escaped = true,
+                '"' => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
+
+        match ch {
+            '"' => in_string = true,
+            '{' => depth += 1,
+            '}' => {
+                if depth == 0 {
+                    return None;
+                }
+                depth -= 1;
+                if depth == 0 {
+                    return Some(idx + ch.len_utf8());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    None
+}
+
+fn strip_embedded_json_segment(text: &str, start: usize, end: usize) -> String {
+    let left = text[..start].trim_end_matches([' ', ':']);
+    let right = text[end..].trim_start_matches([',', ' ']);
+    match (left.is_empty(), right.is_empty()) {
+        (true, true) => String::new(),
+        (true, false) => right.to_string(),
+        (false, true) => left.to_string(),
+        (false, false) => format!("{left}, {right}"),
+    }
+}
+
 fn status_profile_json(entry: Entry) -> StatusProfileJson {
+    let mut usage = entry.usage.map(|usage| StatusUsageJson {
+        state: usage.state,
+        buckets: usage.buckets,
+        status_code: usage.status_code,
+        summary: usage.summary.map(|summary| crate::ui::strip_ansi(&summary)),
+        detail: usage.detail.map(|detail| crate::ui::strip_ansi(&detail)),
+    });
+    let mut top_level_summary = entry
+        .error_summary
+        .map(|error| crate::ui::strip_ansi(&error));
+    let mut error = None;
+    if let Some(usage_json) = usage.as_mut()
+        && usage_json.state == "error"
+    {
+        let status_code = usage_json.status_code.take();
+        let detail = usage_json.detail.take();
+        let usage_summary = usage_json.summary.take();
+        let summary = top_level_summary.take().or(usage_summary);
+        error = summary.map(|summary| StatusErrorJson {
+            summary: status_error_summary_json(summary),
+            status_code,
+            detail,
+        });
+    }
+    if error.is_none() {
+        error = top_level_summary.map(|summary| StatusErrorJson {
+            summary: status_error_summary_json(summary),
+            status_code: None,
+            detail: None,
+        });
+    }
+
     StatusProfileJson {
         id: entry.id,
         label: entry.label,
@@ -2742,10 +2793,8 @@ fn status_profile_json(entry: Entry) -> StatusProfileJson {
             .into_iter()
             .map(|warning| crate::ui::strip_ansi(&warning))
             .collect(),
-        usage: entry.usage,
-        error: entry
-            .error_summary
-            .map(|error| crate::ui::strip_ansi(&error)),
+        usage,
+        error,
     }
 }
 
@@ -2757,15 +2806,9 @@ fn print_current_status_json(current: Option<Entry>) -> Result<(), String> {
     Ok(())
 }
 
-fn print_all_status_json(
-    profiles: Vec<Entry>,
-    hidden_api_profiles: usize,
-    hidden_error_profiles: usize,
-) -> Result<(), String> {
+fn print_all_status_json(profiles: Vec<Entry>) -> Result<(), String> {
     let payload = AllStatusJson {
         profiles: profiles.into_iter().map(status_profile_json).collect(),
-        hidden_api_profiles,
-        hidden_error_profiles,
     };
     let json = serde_json::to_string_pretty(&payload)
         .map_err(|err| crate::msg1(PROFILE_ERR_SERIALIZE_INDEX, err))?;
@@ -3394,8 +3437,8 @@ mod tests {
         crate::ensure_paths(&paths).unwrap();
         save_profile(&paths, Some("team".to_string()), false).unwrap();
         list_profiles(&paths, false, false).unwrap();
-        status_profiles(&paths, false, None, None, false, false).unwrap();
-        status_profiles(&paths, true, None, None, false, false).unwrap();
+        status_profiles(&paths, false, None, None, false).unwrap();
+        status_profiles(&paths, true, None, None, false).unwrap();
     }
 
     #[test]

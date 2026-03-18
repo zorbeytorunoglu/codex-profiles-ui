@@ -97,9 +97,6 @@ pub enum Commands {
             conflicts_with = "all"
         )]
         id: Option<String>,
-        /// Include errored profiles in --all output
-        #[arg(long, requires = "all")]
-        show_errors: bool,
     },
     /// Delete saved profiles
     Delete {

@@ -1414,7 +1414,7 @@ fn ui_load_current_profile_marks_current() {
     seed_profiles(&env);
     seed_alpha(&env);
     let output = env.run(&["load", "--label", "alpha"]);
-    assert!(output.contains("<- current profile"));
+    assert!(output.contains("<- active"));
 }
 
 #[test]
@@ -1519,7 +1519,7 @@ fn ui_delete_current_profile_marks_current() {
     seed_profiles(&env);
     seed_alpha(&env);
     let output = env.run(&["delete", "--label", "alpha", "--yes"]);
-    assert!(output.contains("<- current profile"));
+    assert!(output.contains("<- active"));
 }
 
 #[test]
@@ -1584,7 +1584,7 @@ fn ui_list_command() {
     seed_current(&env);
     let output = env.run(&["list"]);
     assert!(output.contains("current@example.com"));
-    assert!(output.contains("<- current profile"));
+    assert!(output.contains("<- active"));
     assert!(output.contains("Warning: This profile is not saved yet."));
     assert!(output.contains("Run `codex-profiles save` to save this profile."));
     assert!(output.contains("alpha@example.com"));
@@ -1770,7 +1770,7 @@ fn ui_status_command() {
     let output = env.run(&["status"]);
     assert!(output.contains("alpha@example.com"));
     assert!(!output.contains("beta@example.com"));
-    assert!(!output.contains("<- current profile"));
+    assert!(!output.contains("<- active"));
 }
 
 #[test]
@@ -1874,7 +1874,7 @@ fn ui_status_label_command() {
     let output = env.run(&["status", "--label", "beta"]);
     assert!(output.contains(BETA_EMAIL));
     assert!(!output.contains(ALPHA_EMAIL));
-    assert!(!output.contains("<- current profile"));
+    assert!(!output.contains("<- active"));
 
     let _ = usage_handle.join();
 }
@@ -1985,8 +1985,8 @@ fn ui_status_all_command() {
         &["status", "--all"],
         &["alpha@example.com", "beta@example.com"],
     );
-    let output = env.run(&["status", "--all", "--show-errors"]);
-    assert!(output.contains("<- current profile"));
+    let output = env.run(&["status", "--all"]);
+    assert!(output.contains("<- active"));
     assert_order(&output, "alpha@example.com", "beta@example.com");
 }
 
@@ -2013,14 +2013,8 @@ fn ui_status_all_json_command() {
     assert_eq!(profiles.len(), 2);
     assert_eq!(profiles[0].get("id").unwrap(), &serde_json::json!(ALPHA_ID));
     assert_eq!(profiles[1].get("id").unwrap(), &serde_json::json!(BETA_ID));
-    assert_eq!(
-        json.get("hidden_api_profiles").unwrap(),
-        &serde_json::json!(0)
-    );
-    assert_eq!(
-        json.get("hidden_error_profiles").unwrap(),
-        &serde_json::json!(0)
-    );
+    assert!(json.get("hidden_api_profiles").is_none());
+    assert!(json.get("hidden_error_profiles").is_none());
     assert_eq!(profiles[0].get("details"), None);
     assert_eq!(
         profiles[0]
@@ -2065,30 +2059,31 @@ fn ui_status_json_402_exposes_structured_usage_unavailable() {
     let output = env.run(&["status", "--json"]);
     let profile: serde_json::Value = serde_json::from_str(&output).expect("parse status json");
     assert!(profile.get("details").is_none());
-    let error = profile
-        .get("error")
-        .and_then(serde_json::Value::as_str)
-        .expect("error str");
-    assert!(error.starts_with("Usage error: unexpected status 402 Payment Required: {\"detail\":{\"code\":\"deactivated_workspace\"}}, url: http://"));
-    assert!(error.contains("/backend-api/wham/usage"));
-    let usage = profile.get("usage").expect("usage");
-    assert_eq!(usage.get("state").unwrap(), &serde_json::json!("error"));
-    assert_eq!(usage.get("status_code").unwrap(), &serde_json::json!(402));
-    let summary = usage
+    let error = profile.get("error").expect("error object");
+    let summary = error
         .get("summary")
+        .and_then(|summary| summary.get("message"))
         .and_then(serde_json::Value::as_str)
-        .expect("summary str");
-    assert!(summary.starts_with(
-        "unexpected status 402 Payment Required: {\"detail\":{\"code\":\"deactivated_workspace\"}}, url: http://"
-    ));
+        .expect("error summary message");
+    assert!(summary.starts_with("Usage error: unexpected status 402 Payment Required"));
     assert!(summary.contains("/backend-api/wham/usage"));
-    assert!(usage.get("detail").is_none() || usage.get("detail") == Some(&serde_json::Value::Null));
+    assert_eq!(
+        error
+            .get("summary")
+            .and_then(|summary| summary.get("response"))
+            .unwrap(),
+        &serde_json::json!({"detail": {"code": "deactivated_workspace"}})
+    );
+    assert_eq!(error.get("status_code").unwrap(), &serde_json::json!(402));
+    assert!(error.get("detail").is_none() || error.get("detail") == Some(&serde_json::Value::Null));
+    let usage = profile.get("usage").expect("usage");
+    assert_eq!(usage, &serde_json::json!({ "state": "error" }));
 
     let _ = usage_handle.join();
 }
 
 #[test]
-fn ui_status_all_json_hides_api_profiles_by_default() {
+fn ui_status_all_json_includes_api_profiles() {
     let env = TestEnv::new();
     seed_profiles(&env);
     seed_alpha(&env);
@@ -2108,11 +2103,11 @@ fn ui_status_all_json_hides_api_profiles_by_default() {
         .get("profiles")
         .and_then(|value| value.as_array())
         .expect("profiles array");
-    assert_eq!(profiles.len(), 2);
-    assert_eq!(
-        json.get("hidden_api_profiles").unwrap(),
-        &serde_json::json!(1)
-    );
+    assert_eq!(profiles.len(), 3);
+    assert!(profiles.iter().any(|profile| {
+        profile.get("id") == Some(&serde_json::json!("api-key-hidden"))
+            && profile.get("is_api_key") == Some(&serde_json::json!(true))
+    }));
 
     let _ = usage_handle.join();
 }
@@ -2125,15 +2120,13 @@ fn ui_status_all_json_empty_profiles() {
     assert_eq!(
         json,
         serde_json::json!({
-            "profiles": [],
-            "hidden_api_profiles": 0,
-            "hidden_error_profiles": 0
+            "profiles": []
         })
     );
 }
 
 #[test]
-fn ui_status_all_json_hides_errored_profiles_by_default() {
+fn ui_status_all_json_includes_errored_profiles_by_default() {
     let env = TestEnv::new();
     seed_profiles(&env);
     seed_alpha(&env);
@@ -2157,17 +2150,19 @@ fn ui_status_all_json_hides_errored_profiles_by_default() {
         .get("profiles")
         .and_then(|value| value.as_array())
         .expect("profiles array");
-    assert_eq!(profiles.len(), 2);
-    assert_eq!(
-        json.get("hidden_error_profiles").unwrap(),
-        &serde_json::json!(1)
+    assert_eq!(profiles.len(), 3);
+    assert!(
+        profiles
+            .iter()
+            .any(|profile| profile.get("error").is_some()
+                && !profile.get("error").unwrap().is_null())
     );
 
     let _ = usage_handle.join();
 }
 
 #[test]
-fn ui_status_all_json_show_errors_includes_errored_profiles() {
+fn ui_status_all_json_includes_errored_profiles() {
     let env = TestEnv::new();
     seed_profiles(&env);
     seed_alpha(&env);
@@ -2185,17 +2180,13 @@ fn ui_status_all_json_show_errors_includes_errored_profiles() {
     let (usage_addr, usage_handle) = start_usage_server(usage_body, 6).expect("usage server");
     env.write_config(&format!("http://{usage_addr}/backend-api"));
 
-    let output = env.run(&["status", "--all", "--show-errors", "--json"]);
+    let output = env.run(&["status", "--all", "--json"]);
     let json: serde_json::Value = serde_json::from_str(&output).expect("parse status all json");
     let profiles = json
         .get("profiles")
         .and_then(|value| value.as_array())
         .expect("profiles array");
     assert_eq!(profiles.len(), 3);
-    assert_eq!(
-        json.get("hidden_error_profiles").unwrap(),
-        &serde_json::json!(0)
-    );
     assert!(
         profiles
             .iter()
@@ -2224,7 +2215,7 @@ fn ui_status_all_layout_snapshot_spacing() {
     assert_order(&output, ALPHA_EMAIL, BETA_EMAIL);
     assert_profile_block_layout(&output, ALPHA_EMAIL, Some(BETA_EMAIL));
     assert_profile_block_layout(&output, BETA_EMAIL, None);
-    assert!(output.contains("<- current profile"));
+    assert!(output.contains("<- active"));
 
     let _ = usage_handle.join();
 }
@@ -2288,14 +2279,14 @@ fn ui_status_all_no_usage() {
     );
     seed_alpha(&env);
     env.write_config("http://127.0.0.1:1/backend-api");
-    let output = env.run(&["status", "--all", "--show-errors"]);
+    let output = env.run(&["status", "--all"]);
     assert!(output.contains("alpha@example.com"));
     assert!(output.contains("beta@example.com"));
     assert!(output.contains("Error:"));
 }
 
 #[test]
-fn ui_status_all_hides_api_profiles_by_default() {
+fn ui_status_all_includes_api_profiles_by_default() {
     let env = TestEnv::new();
     seed_profiles(&env);
     seed_alpha(&env);
@@ -2312,13 +2303,13 @@ fn ui_status_all_hides_api_profiles_by_default() {
     let output = env.run(&["status", "--all"]);
     assert!(output.contains("alpha@example.com"));
     assert!(output.contains("beta@example.com"));
-    assert!(output.contains("+ 1 API profiles hidden"));
-    assert!(!output.contains("Usage unavailable for API key"));
+    assert!(output.contains("Usage unavailable for API key"));
+    assert!(!output.contains("API profiles hidden"));
     let _ = usage_handle.join();
 }
 
 #[test]
-fn ui_status_all_hides_errored_profiles_by_default() {
+fn ui_status_all_includes_errored_profiles_by_default() {
     let env = TestEnv::new();
     seed_profiles(&env);
     seed_alpha(&env);
@@ -2339,13 +2330,13 @@ fn ui_status_all_hides_errored_profiles_by_default() {
     let output = env.run(&["status", "--all"]);
     assert!(output.contains("alpha@example.com"));
     assert!(output.contains("beta@example.com"));
-    assert!(output.contains("+ 1 errored profiles hidden (use `--show-errors`)"));
-    assert!(!output.contains("Profile is missing"));
+    assert!(output.contains("Error: Profile is missing email or plan information."));
+    assert!(!output.contains("errored profiles hidden"));
     let _ = usage_handle.join();
 }
 
 #[test]
-fn ui_status_all_show_errors_includes_errored_profiles() {
+fn ui_status_all_includes_errored_profiles() {
     let env = TestEnv::new();
     seed_profiles(&env);
     seed_alpha(&env);
@@ -2363,7 +2354,7 @@ fn ui_status_all_show_errors_includes_errored_profiles() {
     let (usage_addr, usage_handle) = start_usage_server(usage_body, 6).expect("usage server");
     env.write_config(&format!("http://{usage_addr}/backend-api"));
 
-    let output = env.run(&["status", "--all", "--show-errors"]);
+    let output = env.run(&["status", "--all"]);
     assert!(output.contains("alpha@example.com"));
     assert!(output.contains("beta@example.com"));
     assert!(output.contains("Error: Profile is missing email or plan information."));
@@ -2372,7 +2363,7 @@ fn ui_status_all_show_errors_includes_errored_profiles() {
 }
 
 #[test]
-fn ui_status_all_hides_current_api_profile() {
+fn ui_status_all_includes_current_api_profile() {
     let env = TestEnv::new();
     seed_profiles(&env);
     seed_api_profile(&env, "api-key-current", "api-key-sk-proj-current1234567890");
@@ -2400,13 +2391,13 @@ fn ui_status_all_hides_current_api_profile() {
     let output = env.run(&["status", "--all"]);
     assert!(output.contains("alpha@example.com"));
     assert!(output.contains("beta@example.com"));
-    assert!(!output.contains("Usage unavailable for API key"));
-    assert!(output.contains("+ 2 API profiles hidden"));
+    assert!(output.contains("Usage unavailable for API key"));
+    assert!(!output.contains("API profiles hidden"));
     let _ = usage_handle.join();
 }
 
 #[test]
-fn ui_status_all_json_hides_current_api_profile() {
+fn ui_status_all_json_includes_current_api_profile() {
     let env = TestEnv::new();
     seed_profiles(&env);
     seed_api_profile(&env, "api-key-current", "api-key-sk-proj-current1234567890");
@@ -2437,10 +2428,13 @@ fn ui_status_all_json_hides_current_api_profile() {
         .get("profiles")
         .and_then(|value| value.as_array())
         .expect("profiles array");
-    assert_eq!(profiles.len(), 2);
+    assert_eq!(profiles.len(), 4);
     assert_eq!(
-        json.get("hidden_api_profiles").unwrap(),
-        &serde_json::json!(2)
+        profiles
+            .iter()
+            .filter(|profile| profile.get("is_api_key") == Some(&serde_json::json!(true)))
+            .count(),
+        2
     );
 
     let _ = usage_handle.join();
@@ -2564,7 +2558,7 @@ fn ui_status_all_uses_usage_path_when_id_token_missing() {
     let (usage_addr, usage_handle) = start_response_server(vec![usage_402_resp], 4).expect("usage");
     env.write_config(&format!("http://{usage_addr}/backend-api"));
 
-    let output = env.run(&["status", "--all", "--show-errors"]);
+    let output = env.run(&["status", "--all"]);
     assert!(output.contains("mail1"));
     assert!(output.contains("deactivated_workspace (unexpected status 402 Payment Required)"));
     assert!(!output.contains("deactivated_workspace\n  unexpected status 402 Payment Required"));
