@@ -98,29 +98,24 @@ rm ~/.local/bin/codex-profiles
 | `codex-profiles list [options]` | List saved profiles. Use `--show-id` or `--json` for alternate output. |
 | `codex-profiles export [options]` | Export saved profiles to a single JSON bundle. |
 | `codex-profiles import [options]` | Import saved profiles from a JSON bundle. |
-| `codex-profiles doctor [--fix] [--json]` | Run local diagnostics and optionally apply safe metadata repairs. |
+| `codex-profiles doctor [--fix] [--json]` | Run local diagnostics and optionally apply safe metadata and permission repairs. |
 | `codex-profiles label set [options]` | Add or replace a label on a saved profile. |
 | `codex-profiles label clear [options]` | Remove a label from a saved profile. |
 | `codex-profiles label rename [options]` | Rename an existing label without using set/clear manually. |
-| `codex-profiles default [set\|clear\|show]` | Manage the default saved profile used by non-interactive load. |
-| `codex-profiles status [options]` | Show usage for the current profile, a selected saved profile (`--label`/`--id`), or all saved profiles with `--all`. Use `--json` for structured output. |
+| `codex-profiles status [options]` | Show usage for the current profile, a selected saved profile (`--label`/`--id`), or all saved profiles with `--all`. Use `--show-errors` to include errored saved profiles and `--json` for structured output. |
 | `codex-profiles delete [options]` | Delete profiles. Use `--label <name>`, repeat `--id <profile-id>`, and `--yes` as needed. |
 
 Label examples: `codex-profiles label set --id <profile-id> --to work`, `codex-profiles label clear --label work`.
-
-Default examples: `codex-profiles default set --label work`, `codex-profiles default show`, `codex-profiles default clear`.
-
-When `load` runs without a selector in a non-interactive session, it uses the saved default profile if one is set.
 
 `status --json` returns the current profile object (or `null`); `status --label/--id --json` returns the selected saved profile object (or `null` when no saved profiles exist); `status --all --json` returns `profiles` plus hidden-profile counts.
 
 `export --output <file>` exports all saved profiles by default. Use `--label` or repeated `--id` to export a smaller set.
 
-Export bundles contain secrets. Store them securely. `import` fails on id, label, or default-profile conflicts instead of overwriting existing state.
+Export bundles contain secrets. Store them securely. `import` fails on id or label conflicts instead of overwriting existing state.
 
-When the exported set includes the current default profile, export/import preserves that default selection too.
+`doctor --fix` repairs safe profile-storage metadata and Unix file permissions (missing storage files, restrictive modes for `auth.json` / profile storage, stale index refs, and a rebuild of `profiles.json` from saved profile files when needed). It does not delete invalid saved profile files; when it rebuilds a broken `profiles.json`, it writes `profiles.json.bak` (or `profiles.json.bak.N` if a backup already exists), and labels stored only in the broken index may need to be reconfigured.
 
-`doctor --fix` repairs safe profile-storage metadata only (missing storage files, stale index/default refs, and a rebuild of `profiles.json` from saved profile files when needed). It does not delete invalid saved profile files in this first pass; when it rebuilds a broken `profiles.json`, it writes `profiles.json.bak` (or `profiles.json.bak.N` if a backup already exists), and labels/defaults stored only in the broken index may need to be reconfigured.
+If you set `chatgpt_base_url` for status usage lookups, remote custom hosts are rejected unless they are the official ChatGPT hosts. Loopback addresses remain allowed for local testing.
 
 > [!WARNING]
 > Deleting a profile does not log you out. It only removes the saved profile file.

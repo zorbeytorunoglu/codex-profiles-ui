@@ -13,7 +13,7 @@ Download the release asset you want to inspect together with `SHA256SUMS` and
 `release-manifest.json`:
 
 ```bash
-gh release download v0.3.0 \
+gh release download v0.2.0 \
   --repo midhunmonachan/codex-profiles \
   --pattern 'SHA256SUMS' \
   --pattern 'release-manifest.json' \

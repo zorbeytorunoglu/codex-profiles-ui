@@ -7,9 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `--json` output for mutating commands: `save`, `load`, `delete`, `label set`, `label clear`, `label rename`, `export`, and `import`
+- `doctor --json` and `doctor --fix` for scriptable diagnostics and repair
+- profile label management commands: `label set`, `label clear`, and `label rename`
+- `status` selectors and JSON modes: `--id`, `--label`, and `--json`
+- `load --force`, `export`, `import`, exact `--id` selectors for `load` / `delete`, and `list --json` / `--show-id`
+
+### Changed
+
+- mutating commands now emit a uniform JSON response shape when `--json` is passed
+- `status` now refreshes tokens on usage `401` responses, syncs refreshed credentials back to the saved profile when the current profile is saved, and formats auth/usage HTTP errors in Codex-CLI style
+- regular remote error output now uses aligned multiline blocks while JSON output preserves raw backend detail
+- top-level `--help` output now uses a shorter example list and highlights `--json` support as a common option
+- errors always exit non-zero and write to stderr only; stdout is never polluted with partial JSON on error
+
+### Removed
+
+- `anyhow` dependency; `updates.rs` now uses `Result<T, String>` consistently
+
 ### Internal
 
-- Added `checksums/v0.2.0.txt` from release workflow output
+- auth refresh now refuses to rewrite drifted on-disk auth state
+- remote output sanitization and legacy-schema detection were hardened
+- `updates.rs` error handling is now consistently `Result<T, String>` / `.map_err(|e| e.to_string())`
+- integration and regression coverage expanded for mutating JSON output, remote error formatting, and status/profile edge cases
 
 ## [0.2.0] - 2026-02-21
 

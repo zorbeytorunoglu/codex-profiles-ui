@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Installer for codex-profiles
-# Detects OS/arch, downloads binary from releases, verifies checksum from repo
+# Detects OS/arch, downloads binary from releases, verifies checksum from release
 
 set -euo pipefail
 
@@ -110,9 +110,14 @@ verify_checksum() {
         actual="$(sha256sum "$file" | awk '{print $1}')"
     elif command -v shasum > /dev/null 2>&1; then
         actual="$(shasum -a 256 "$file" | awk '{print $1}')"
+    elif command -v openssl > /dev/null 2>&1; then
+        actual="$(openssl dgst -sha256 "$file" | awk '{print $NF}')"
     else
-        warn "sha256sum/shasum not found, skipping checksum verification"
-        return 0
+        if [[ "${CODEX_PROFILES_ALLOW_INSECURE_INSTALL:-0}" == "1" ]]; then
+            warn "sha256sum/shasum/openssl not found, skipping checksum verification because CODEX_PROFILES_ALLOW_INSECURE_INSTALL=1"
+            return 0
+        fi
+        error "need sha256sum, shasum, or openssl for checksum verification.\nSet CODEX_PROFILES_ALLOW_INSECURE_INSTALL=1 to bypass (not recommended)."
     fi
     
     if [ "$expected" != "$actual" ]; then
