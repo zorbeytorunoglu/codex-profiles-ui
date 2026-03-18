@@ -53,6 +53,7 @@ fn print_version_header() {
 
 fn run(cli: Cli) -> Result<(), String> {
     let paths = resolve_paths()?;
+    let json = cli.json;
     let is_doctor = matches!(&cli.command, Commands::Doctor { .. });
     if !is_doctor {
         ensure_paths(&paths)?;
@@ -70,33 +71,20 @@ fn run(cli: Cli) -> Result<(), String> {
     }
 
     match cli.command {
-        Commands::Save { label, json } => save_profile(&paths, label, json),
-        Commands::Load {
-            label,
-            id,
-            force,
-            json,
-        } => load_profile(&paths, label, id, force, json),
-        Commands::List { json, show_id } => list_profiles(&paths, json, show_id),
-        Commands::Export {
-            label,
-            id,
-            output,
-            json,
-        } => export_profiles(&paths, label, id, output, json),
-        Commands::Import { input, json } => import_profiles(&paths, input, json),
-        Commands::Doctor { fix, json } => doctor(&paths, fix, json),
+        Commands::Save { label } => save_profile(&paths, label, json),
+        Commands::Load { label, id, force } => load_profile(&paths, label, id, force, json),
+        Commands::List { show_id } => list_profiles(&paths, json, show_id),
+        Commands::Export { label, id, output } => export_profiles(&paths, label, id, output, json),
+        Commands::Import { input } => import_profiles(&paths, input, json),
+        Commands::Doctor { fix } => doctor(&paths, fix, json),
         Commands::Label { command } => match command {
-            crate::cli::LabelCommands::Set {
-                label,
-                id,
-                to,
-                json,
-            } => set_profile_label(&paths, label, id, to, json),
-            crate::cli::LabelCommands::Clear { label, id, json } => {
+            crate::cli::LabelCommands::Set { label, id, to } => {
+                set_profile_label(&paths, label, id, to, json)
+            }
+            crate::cli::LabelCommands::Clear { label, id } => {
                 clear_profile_label(&paths, label, id, json)
             }
-            crate::cli::LabelCommands::Rename { label, to, json } => {
+            crate::cli::LabelCommands::Rename { label, to } => {
                 rename_profile_label(&paths, label, to, json)
             }
         },
@@ -104,15 +92,9 @@ fn run(cli: Cli) -> Result<(), String> {
             all,
             label,
             id,
-            json,
             show_errors,
         } => status_profiles(&paths, all, label, id, json, show_errors),
-        Commands::Delete {
-            yes,
-            label,
-            id,
-            json,
-        } => delete_profile(&paths, yes, label, id, json),
+        Commands::Delete { yes, label, id } => delete_profile(&paths, yes, label, id, json),
     }
 }
 
@@ -216,10 +198,8 @@ mod tests {
         let _skip = set_env_guard("CODEX_PROFILES_SKIP_UPDATE", Some("1"));
         let cli = Cli {
             plain: true,
-            command: Commands::List {
-                json: false,
-                show_id: false,
-            },
+            json: false,
+            command: Commands::List { show_id: false },
         };
         run(cli).unwrap();
     }
