@@ -15,6 +15,17 @@ fn detects_install_source_without_env_mutation() {
     );
     assert_eq!(
         detect_install_source_inner(false, std::path::Path::new("/any/path"), false, true),
+        InstallSource::Npm
+    );
+    assert_eq!(
+        detect_install_source_inner(
+            false,
+            std::path::Path::new(
+                "/Users/dev/.bun/install/global/node_modules/codex-profiles/bin/codex-profiles",
+            ),
+            false,
+            true,
+        ),
         InstallSource::Bun
     );
     assert_eq!(

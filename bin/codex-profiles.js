@@ -56,33 +56,23 @@ const invokedName = path.basename(invokedPath).replace(/\.js$/, "");
 // receives a fatal signal, both processes exit in a predictable manner.
 
 /**
- * Use heuristics to detect the package manager that was used to install Codex Profiles
- * in order to give the user a hint about how to update it.
+ * Detect the package manager from installation location, not ambient npm_* env
+ * variables. Shell/session env can leak bun hints into npm-managed installs.
  */
-function detectPackageManager() {
-  const userAgent = process.env.npm_config_user_agent || "";
-  if (/\bbun\//.test(userAgent)) {
-    return "bun";
-  }
-
-  const execPath = process.env.npm_execpath || "";
-  if (execPath.includes("bun")) {
-    return "bun";
-  }
-
+function detectPackageManager(packageDirectory) {
   if (
-    __dirname.includes(".bun/install/global") ||
-    __dirname.includes(".bun\\install\\global")
+    packageDirectory.includes(".bun/install/global") ||
+    packageDirectory.includes(".bun\\install\\global")
   ) {
     return "bun";
   }
 
-  return userAgent ? "npm" : null;
+  return "npm";
 }
 
 const env = { ...process.env };
 const packageManagerEnvVar =
-  detectPackageManager() === "bun"
+  detectPackageManager(packageDir) === "bun"
     ? "CODEX_PROFILES_MANAGED_BY_BUN"
     : "CODEX_PROFILES_MANAGED_BY_NPM";
 env[packageManagerEnvVar] = "1";

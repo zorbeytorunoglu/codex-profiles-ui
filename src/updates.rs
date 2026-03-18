@@ -19,7 +19,9 @@ const HOMEBREW_CASK_URL: &str =
 const LATEST_RELEASE_URL: &str =
     "https://api.github.com/repos/midhunmonachan/codex-profiles/releases/latest";
 const RELEASE_NOTES_URL: &str = "https://github.com/midhunmonachan/codex-profiles/releases/latest";
+#[cfg(test)]
 const HOMEBREW_CASK_URL_OVERRIDE_ENV_VAR: &str = "CODEX_PROFILES_HOMEBREW_CASK_URL";
+#[cfg(test)]
 const LATEST_RELEASE_URL_OVERRIDE_ENV_VAR: &str = "CODEX_PROFILES_LATEST_RELEASE_URL";
 
 /// Update action the CLI should perform after the prompt exits.
@@ -78,15 +80,27 @@ pub fn detect_install_source_inner(
     managed_by_npm: bool,
     managed_by_bun: bool,
 ) -> InstallSource {
+    let bun_install = is_bun_install(current_exe);
     if managed_by_npm {
         InstallSource::Npm
-    } else if managed_by_bun {
+    } else if managed_by_bun && bun_install {
         InstallSource::Bun
     } else if is_macos && is_brew_install(current_exe) {
         InstallSource::Brew
+    } else if bun_install {
+        InstallSource::Bun
+    } else if managed_by_bun {
+        // Defensive fallback: older wrappers may leak bun hints from ambient env
+        // even when the installed binary is not managed by bun.
+        InstallSource::Npm
     } else {
         InstallSource::Unknown
     }
+}
+
+fn is_bun_install(current_exe: &std::path::Path) -> bool {
+    let exe = current_exe.to_string_lossy();
+    exe.contains(".bun/install/global") || exe.contains(".bun\\install\\global")
 }
 
 fn is_brew_install(current_exe: &std::path::Path) -> bool {
@@ -235,6 +249,7 @@ fn run_update_prompt_if_needed_with_io_and_source(
     write_prompt(output, format_args!("{}", UPDATE_OPTION_SKIP_VERSION))?;
     write_prompt(output, format_args!("{}", UPDATE_PROMPT_SELECT))?;
     output.flush().map_err(prompt_io_error)?;
+    let _ = mark_prompted_now(config);
 
     let mut selection = String::new();
     input
@@ -285,7 +300,7 @@ fn get_upgrade_version_with_debug(config: &UpdateConfig, is_debug: bool) -> Opti
     if updates_disabled_with_debug(config, is_debug) {
         return None;
     }
-    let paths = update_paths(config);
+    let paths = paths_for_update(config.codex_home.clone());
     let mut info = read_update_cache(&paths).ok().flatten();
 
     let should_check = match &info {
@@ -318,14 +333,14 @@ fn get_upgrade_version_with_debug(config: &UpdateConfig, is_debug: bool) -> Opti
     })
 }
 
-fn check_for_update(paths: &Paths) -> anyhow::Result<()> {
+fn check_for_update(paths: &Paths) -> Result<(), String> {
     check_for_update_with_action(paths, get_update_action())
 }
 
 fn check_for_update_with_action(
     paths: &Paths,
     update_action: Option<UpdateAction>,
-) -> anyhow::Result<()> {
+) -> Result<(), String> {
     let latest_version = match update_action {
         Some(UpdateAction::BrewUpgrade) => {
             fetch_version_from_cask().or_else(fetch_version_from_release)
@@ -352,7 +367,7 @@ pub fn is_newer(latest: &str, current: &str) -> Option<bool> {
 }
 
 #[doc(hidden)]
-pub fn extract_version_from_cask(cask_contents: &str) -> anyhow::Result<String> {
+pub fn extract_version_from_cask(cask_contents: &str) -> Result<String, String> {
     cask_contents
         .lines()
         .find_map(|line| {
@@ -361,17 +376,17 @@ pub fn extract_version_from_cask(cask_contents: &str) -> anyhow::Result<String> 
                 .and_then(|rest| rest.strip_suffix('"'))
                 .map(ToString::to_string)
         })
-        .ok_or_else(|| anyhow::anyhow!("Failed to find version in Homebrew cask file"))
+        .ok_or_else(|| "Failed to find version in Homebrew cask file".to_string())
 }
 
 #[doc(hidden)]
-pub fn extract_version_from_latest_tag(latest_tag_name: &str) -> anyhow::Result<String> {
+pub fn extract_version_from_latest_tag(latest_tag_name: &str) -> Result<String, String> {
     for prefix in ["v", "rust-v"] {
         if let Some(version) = latest_tag_name.strip_prefix(prefix) {
             return Ok(version.to_string());
         }
     }
-    Err(anyhow::anyhow!(
+    Err(format!(
         "Failed to parse latest tag name '{latest_tag_name}'"
     ))
 }
@@ -416,7 +431,7 @@ fn get_upgrade_version_for_popup_with_debug(
         return None;
     }
 
-    let paths = update_paths(config);
+    let paths = paths_for_update(config.codex_home.clone());
     let latest = get_upgrade_version_with_debug(config, is_debug)?;
     let info = read_update_cache(&paths).ok().flatten();
     if info
@@ -434,25 +449,34 @@ fn get_upgrade_version_for_popup_with_debug(
     {
         return None;
     }
-    if let Some(mut info) = info {
-        info.last_prompted_at = Some(Utc::now());
-        let _ = write_update_cache(&paths, &info);
-    }
     Some(latest)
 }
 
 /// Persist a dismissal for the current latest version so we don't show
 /// the update popup again for this version.
-pub fn dismiss_version(config: &UpdateConfig, version: &str) -> anyhow::Result<()> {
-    if updates_disabled(config) {
+pub fn dismiss_version(config: &UpdateConfig, version: &str) -> Result<(), String> {
+    if !config.check_for_update_on_startup {
         return Ok(());
     }
-    let paths = update_paths(config);
+    let paths = paths_for_update(config.codex_home.clone());
     let mut info = match read_update_cache(&paths) {
         Ok(Some(info)) => info,
         _ => return Ok(()),
     };
     info.dismissed_version = Some(version.to_string());
+    info.last_prompted_at = Some(Utc::now());
+    write_update_cache(&paths, &info)
+}
+
+fn mark_prompted_now(config: &UpdateConfig) -> Result<(), String> {
+    if !config.check_for_update_on_startup {
+        return Ok(());
+    }
+    let paths = paths_for_update(config.codex_home.clone());
+    let mut info = match read_update_cache(&paths) {
+        Ok(Some(info)) => info,
+        _ => return Ok(()),
+    };
     info.last_prompted_at = Some(Utc::now());
     write_update_cache(&paths, &info)
 }
@@ -463,10 +487,6 @@ fn parse_version(v: &str) -> Option<(u64, u64, u64)> {
     let min = iter.next()?.parse::<u64>().ok()?;
     let pat = iter.next()?.parse::<u64>().ok()?;
     Some((maj, min, pat))
-}
-
-fn updates_disabled(config: &UpdateConfig) -> bool {
-    updates_disabled_with_debug(config, cfg!(debug_assertions))
 }
 
 fn updates_disabled_with_debug(config: &UpdateConfig, is_debug: bool) -> bool {
@@ -485,11 +505,7 @@ fn paths_for_update(codex_home: PathBuf) -> Paths {
     }
 }
 
-fn update_paths(config: &UpdateConfig) -> Paths {
-    paths_for_update(config.codex_home.clone())
-}
-
-fn read_update_cache(paths: &Paths) -> anyhow::Result<Option<UpdateCache>> {
+fn read_update_cache(paths: &Paths) -> Result<Option<UpdateCache>, String> {
     if !paths.update_cache.is_file() {
         if let Some(legacy) = read_legacy_update_cache(paths)? {
             let _ = write_update_cache(paths, &legacy);
@@ -497,31 +513,30 @@ fn read_update_cache(paths: &Paths) -> anyhow::Result<Option<UpdateCache>> {
         }
         return Ok(None);
     }
-    let contents = fs::read_to_string(&paths.update_cache)?;
+    let contents = fs::read_to_string(&paths.update_cache).map_err(|e| e.to_string())?;
     if contents.trim().is_empty() {
         return Ok(None);
     }
-    let cache = serde_json::from_str::<UpdateCache>(&contents)?;
+    let cache = serde_json::from_str::<UpdateCache>(&contents).map_err(|e| e.to_string())?;
     Ok(Some(cache))
 }
 
-fn write_update_cache(paths: &Paths, cache: &UpdateCache) -> anyhow::Result<()> {
-    let _lock = lock_usage(paths).map_err(|err| anyhow::anyhow!(err))?;
-    let contents = serde_json::to_string_pretty(cache)?;
+fn write_update_cache(paths: &Paths, cache: &UpdateCache) -> Result<(), String> {
+    let _lock = lock_usage(paths)?;
+    let contents = serde_json::to_string_pretty(cache).map_err(|e| e.to_string())?;
     write_atomic(&paths.update_cache, format!("{contents}\n").as_bytes())
-        .map_err(|err| anyhow::anyhow!(err))
 }
 
-fn read_legacy_update_cache(paths: &Paths) -> anyhow::Result<Option<UpdateCache>> {
+fn read_legacy_update_cache(paths: &Paths) -> Result<Option<UpdateCache>, String> {
     if !paths.profiles_index.is_file() {
         return Ok(None);
     }
-    let contents = fs::read_to_string(&paths.profiles_index)?;
-    let json: serde_json::Value = serde_json::from_str(&contents)?;
+    let contents = fs::read_to_string(&paths.profiles_index).map_err(|e| e.to_string())?;
+    let json: serde_json::Value = serde_json::from_str(&contents).map_err(|e| e.to_string())?;
     let Some(value) = json.get("update_cache") else {
         return Ok(None);
     };
-    let cache = serde_json::from_value::<UpdateCache>(value.clone())?;
+    let cache = serde_json::from_value::<UpdateCache>(value.clone()).map_err(|e| e.to_string())?;
     if let Ok(index) = read_profiles_index(paths) {
         let _ = write_profiles_index(paths, &index);
     }
@@ -536,13 +551,30 @@ fn update_agent() -> ureq::Agent {
 }
 
 fn latest_release_url() -> String {
-    std::env::var(LATEST_RELEASE_URL_OVERRIDE_ENV_VAR)
-        .unwrap_or_else(|_| LATEST_RELEASE_URL.to_string())
+    #[cfg(test)]
+    {
+        env_url(LATEST_RELEASE_URL_OVERRIDE_ENV_VAR, LATEST_RELEASE_URL)
+    }
+    #[cfg(not(test))]
+    {
+        LATEST_RELEASE_URL.to_string()
+    }
 }
 
 fn homebrew_cask_url() -> String {
-    std::env::var(HOMEBREW_CASK_URL_OVERRIDE_ENV_VAR)
-        .unwrap_or_else(|_| HOMEBREW_CASK_URL.to_string())
+    #[cfg(test)]
+    {
+        env_url(HOMEBREW_CASK_URL_OVERRIDE_ENV_VAR, HOMEBREW_CASK_URL)
+    }
+    #[cfg(not(test))]
+    {
+        HOMEBREW_CASK_URL.to_string()
+    }
+}
+
+#[cfg(test)]
+fn env_url(override_var: &str, default: &str) -> String {
+    std::env::var(override_var).unwrap_or_else(|_| default.to_string())
 }
 
 #[cfg(test)]
@@ -553,7 +585,7 @@ mod tests {
     use std::path::PathBuf;
 
     fn seed_version_info(config: &UpdateConfig, version: &str) {
-        let paths = update_paths(config);
+        let paths = paths_for_update(config.codex_home.clone());
         fs::create_dir_all(&paths.profiles).unwrap();
         fs::write(&paths.profiles_lock, "").unwrap();
         let info = UpdateCache {
@@ -586,6 +618,18 @@ mod tests {
         );
         assert_eq!(
             detect_install_source_inner(false, &exe, false, true),
+            InstallSource::Npm
+        );
+
+        let bun_exe = PathBuf::from(
+            "/Users/dev/.bun/install/global/node_modules/codex-profiles/bin/codex-profiles",
+        );
+        assert_eq!(
+            detect_install_source_inner(false, &bun_exe, false, true),
+            InstallSource::Bun
+        );
+        assert_eq!(
+            detect_install_source_inner(false, &bun_exe, false, false),
             InstallSource::Bun
         );
     }
@@ -740,6 +784,13 @@ mod tests {
         .unwrap();
         assert!(matches!(result, UpdatePromptOutcome::Continue));
 
+        let cache = read_update_cache(&paths_for_update(config.codex_home.clone()))
+            .unwrap()
+            .expect("update cache");
+        assert!(cache.last_prompted_at.is_none());
+        let output = String::from_utf8(output).expect("utf8 output");
+        assert!(output.contains("Run `npm install -g codex-profiles` to update."));
+
         let dir = tempfile::tempdir().expect("tempdir");
         let config = UpdateConfig {
             codex_home: dir.path().to_path_buf(),
@@ -758,6 +809,25 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(result, UpdatePromptOutcome::RunUpdate(_)));
+
+        let cache = read_update_cache(&paths_for_update(config.codex_home.clone()))
+            .unwrap()
+            .expect("update cache");
+        assert!(cache.last_prompted_at.is_some());
+
+        let mut input = std::io::Cursor::new("1\n");
+        let mut output = Vec::new();
+        let result = run_update_prompt_if_needed_with_io_and_source(
+            &config,
+            false,
+            true,
+            InstallSource::Npm,
+            &mut input,
+            &mut output,
+        )
+        .unwrap();
+        assert!(matches!(result, UpdatePromptOutcome::Continue));
+        assert!(output.is_empty());
 
         let dir = tempfile::tempdir().expect("tempdir");
         let config = UpdateConfig {
