@@ -29,10 +29,13 @@ pub(crate) struct PlainGuard {
 fn set_env(key: &str, value: Option<&str>) -> Option<String> {
     let prev = env::var(key).ok();
     if let Some(value) = value {
+        // SAFETY: ENV_MUTEX is held by the caller (via EnvVarGuard / set_env_guard),
+        // serializing all env var mutations across test threads.
         unsafe {
             env::set_var(key, value);
         }
     } else {
+        // SAFETY: Same as above — ENV_MUTEX serializes access.
         unsafe {
             env::remove_var(key);
         }
@@ -64,10 +67,12 @@ pub(crate) fn set_plain_guard(value: bool) -> PlainGuard {
 
 fn restore_env(key: &str, prev: Option<String>) {
     if let Some(value) = prev {
+        // SAFETY: ENV_MUTEX is held via EnvVarGuard's Drop impl, serializing env var mutations.
         unsafe {
             env::set_var(key, value);
         }
     } else {
+        // SAFETY: Same as above — ENV_MUTEX serializes access.
         unsafe {
             env::remove_var(key);
         }

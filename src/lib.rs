@@ -13,9 +13,7 @@ pub fn run_cli() {
 
 fn run_cli_with_args(args: Vec<std::ffi::OsString>) -> Result<(), String> {
     if args.len() == 1 {
-        let name = package_command_name();
-        println!("{name} {}", env!("CARGO_PKG_VERSION"));
-        println!();
+        print_version_header();
         let mut cmd = command_with_examples();
         let _ = cmd.print_help();
         println!();
@@ -26,9 +24,7 @@ fn run_cli_with_args(args: Vec<std::ffi::OsString>) -> Result<(), String> {
         Ok(matches) => matches,
         Err(err) => {
             if err.kind() == ErrorKind::DisplayHelp {
-                let name = package_command_name();
-                println!("{name} {}", env!("CARGO_PKG_VERSION"));
-                println!();
+                print_version_header();
                 let _ = err.print();
                 println!();
                 return Ok(());
@@ -49,14 +45,17 @@ fn run_cli_with_args(args: Vec<std::ffi::OsString>) -> Result<(), String> {
     Ok(())
 }
 
+fn print_version_header() {
+    let name = package_command_name();
+    println!("{name} {}", env!("CARGO_PKG_VERSION"));
+    println!();
+}
+
 fn run(cli: Cli) -> Result<(), String> {
     let paths = resolve_paths()?;
     let is_doctor = matches!(&cli.command, Commands::Doctor { .. });
     if !is_doctor {
         ensure_paths(&paths)?;
-    }
-
-    if !is_doctor {
         let check_for_update_on_startup = std::env::var_os("CODEX_PROFILES_SKIP_UPDATE").is_none();
         let update_config = UpdateConfig {
             codex_home: paths.codex.clone(),
@@ -71,29 +70,35 @@ fn run(cli: Cli) -> Result<(), String> {
     }
 
     match cli.command {
-        Commands::Save { label } => save_profile(&paths, label),
-        Commands::Load { label, id, force } => load_profile(&paths, label, id, force),
+        Commands::Save { label, json } => save_profile(&paths, label, json),
+        Commands::Load {
+            label,
+            id,
+            force,
+            json,
+        } => load_profile(&paths, label, id, force, json),
         Commands::List { json, show_id } => list_profiles(&paths, json, show_id),
-        Commands::Export { label, id, output } => export_profiles(&paths, label, id, output),
-        Commands::Import { input } => import_profiles(&paths, input),
+        Commands::Export {
+            label,
+            id,
+            output,
+            json,
+        } => export_profiles(&paths, label, id, output, json),
+        Commands::Import { input, json } => import_profiles(&paths, input, json),
         Commands::Doctor { fix, json } => doctor(&paths, fix, json),
         Commands::Label { command } => match command {
-            crate::cli::LabelCommands::Set { label, id, to } => {
-                set_profile_label(&paths, label, id, to)
+            crate::cli::LabelCommands::Set {
+                label,
+                id,
+                to,
+                json,
+            } => set_profile_label(&paths, label, id, to, json),
+            crate::cli::LabelCommands::Clear { label, id, json } => {
+                clear_profile_label(&paths, label, id, json)
             }
-            crate::cli::LabelCommands::Clear { label, id } => {
-                clear_profile_label(&paths, label, id)
+            crate::cli::LabelCommands::Rename { label, to, json } => {
+                rename_profile_label(&paths, label, to, json)
             }
-            crate::cli::LabelCommands::Rename { label, to } => {
-                rename_profile_label(&paths, label, to)
-            }
-        },
-        Commands::Default { command } => match command {
-            crate::cli::DefaultCommands::Set { label, id } => {
-                set_default_profile(&paths, label, id)
-            }
-            crate::cli::DefaultCommands::Clear => clear_default_profile(&paths),
-            crate::cli::DefaultCommands::Show => show_default_profile(&paths),
         },
         Commands::Status {
             all,
@@ -102,7 +107,12 @@ fn run(cli: Cli) -> Result<(), String> {
             json,
             show_errors,
         } => status_profiles(&paths, all, label, id, json, show_errors),
-        Commands::Delete { yes, label, id } => delete_profile(&paths, yes, label, id),
+        Commands::Delete {
+            yes,
+            label,
+            id,
+            json,
+        } => delete_profile(&paths, yes, label, id, json),
     }
 }
 
@@ -125,6 +135,7 @@ mod auth;
 mod cli;
 mod common;
 mod doctor;
+mod json_response;
 mod messages;
 mod profiles;
 #[cfg(test)]
@@ -147,7 +158,6 @@ pub use updates::{
     InstallSource, detect_install_source_inner, extract_version_from_cask,
     extract_version_from_latest_tag, is_newer,
 };
-pub use usage::parse_config_value;
 
 #[cfg(test)]
 mod tests {

@@ -1,14 +1,13 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::fs::OpenOptions;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use serde::Serialize;
 
 use crate::{
     InstallSource, Paths, current_saved_id, detect_install_source, is_profile_ready, lock_usage,
-    print_output_block, profile_id_from_path, read_auth_file, read_tokens,
-    repair_profiles_metadata,
+    print_output_block, profile_files, profile_id_from_path, read_tokens, repair_profiles_metadata,
 };
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -181,29 +180,35 @@ fn repair_storage(paths: &Paths) -> Result<Vec<String>, String> {
             return Err("Error: profiles lock exists but is not a file".to_string());
         }
     } else {
-        OpenOptions::new()
-            .create(true)
-            .append(true)
+        let mut options = OpenOptions::new();
+        options.create(true).append(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        options
             .open(&paths.profiles_lock)
             .map_err(|err| err.to_string())?;
         repairs.push("Created profiles lock file".to_string());
     }
 
+    repairs.extend(repair_storage_permissions(paths)?);
+
     Ok(repairs)
 }
 
 fn collect_checks(paths: &Paths) -> Vec<Check> {
-    let mut checks: Vec<Check> = inspect_install(paths)
-        .into_iter()
-        .chain(inspect_auth(paths))
-        .chain(inspect_profiles_dir(paths))
-        .chain(inspect_profiles_index(paths))
-        .chain(inspect_profiles_lock(paths))
-        .collect();
+    let auth = auth_state(paths);
+    let mut checks: Vec<Check> = inspect_install(paths).into_iter().collect();
+    checks.push(inspect_auth(paths, &auth));
+    checks.push(inspect_profiles_dir(paths));
+    checks.push(inspect_profiles_index(paths));
+    checks.push(inspect_profiles_lock(paths));
 
     let saved = inspect_saved_profiles(paths);
     checks.push(saved.check);
-    checks.push(inspect_current_profile(paths, &saved.tokens));
+    checks.push(inspect_current_profile(paths, &auth, &saved.tokens));
     checks
 }
 
@@ -252,26 +257,53 @@ fn inspect_install(_paths: &Paths) -> [Check; 2] {
     [binary, source]
 }
 
-fn inspect_auth(paths: &Paths) -> [Check; 1] {
-    [match auth_state(paths) {
+fn inspect_auth(paths: &Paths, auth: &AuthState) -> Check {
+    match auth {
         AuthState::Missing => Check::new(Level::Warn, "auth file", "missing (run `codex login`)"),
-        AuthState::Valid => Check::new(Level::Ok, "auth file", "valid"),
+        AuthState::Valid => {
+            #[cfg(unix)]
+            if let Ok(mode) = current_mode(&paths.auth)
+                && mode != 0o600
+            {
+                return Check::new(
+                    Level::Warn,
+                    "auth file",
+                    format!("valid (mode {mode:o}; run `doctor --fix`)"),
+                );
+            }
+            Check::new(Level::Ok, "auth file", "valid")
+        }
         AuthState::Incomplete(reason) => Check::new(Level::Warn, "auth file", reason),
         AuthState::Invalid(reason) => Check::new(
             Level::Error,
             "auth file",
             format!("{reason} (run `codex login`)"),
         ),
-    }]
+    }
 }
 
-fn inspect_profiles_dir(paths: &Paths) -> [Check; 1] {
-    [match fs::metadata(&paths.profiles) {
-        Ok(meta) if meta.is_dir() => Check::new(
-            Level::Ok,
-            "profiles directory",
-            paths.profiles.display().to_string(),
-        ),
+fn inspect_profiles_dir(paths: &Paths) -> Check {
+    match fs::metadata(&paths.profiles) {
+        Ok(meta) if meta.is_dir() => {
+            #[cfg(unix)]
+            if let Ok(mode) = current_mode(&paths.profiles)
+                && mode != 0o700
+            {
+                return Check::new(
+                    Level::Warn,
+                    "profiles directory",
+                    format!(
+                        "{} (mode {mode:o}; run `doctor --fix`)",
+                        paths.profiles.display()
+                    ),
+                );
+            }
+            Check::new(
+                Level::Ok,
+                "profiles directory",
+                paths.profiles.display().to_string(),
+            )
+        }
         Ok(_) => Check::new(
             Level::Error,
             "profiles directory",
@@ -281,26 +313,38 @@ fn inspect_profiles_dir(paths: &Paths) -> [Check; 1] {
             Check::new(Level::Info, "profiles directory", "missing")
         }
         Err(err) => Check::new(Level::Error, "profiles directory", err.to_string()),
-    }]
+    }
 }
 
-fn inspect_profiles_index(paths: &Paths) -> [Check; 1] {
-    [if !paths.profiles_index.exists() {
+fn inspect_profiles_index(paths: &Paths) -> Check {
+    if !paths.profiles_index.exists() {
         Check::new(Level::Info, "profiles index", "missing")
     } else {
         match profiles_index_len_read_only(&paths.profiles_index) {
-            Ok(count) => Check::new(Level::Ok, "profiles index", format!("{} entries", count)),
+            Ok(count) => {
+                #[cfg(unix)]
+                if let Ok(mode) = current_mode(&paths.profiles_index)
+                    && mode != 0o600
+                {
+                    return Check::new(
+                        Level::Warn,
+                        "profiles index",
+                        format!("{count} entries (mode {mode:o}; run `doctor --fix`)"),
+                    );
+                }
+                Check::new(Level::Ok, "profiles index", format!("{} entries", count))
+            }
             Err(err) => Check::new(
                 Level::Error,
                 "profiles index",
                 format!("{err} (run `doctor --fix` or remove profiles.json)"),
             ),
         }
-    }]
+    }
 }
 
-fn inspect_profiles_lock(paths: &Paths) -> [Check; 1] {
-    [if !paths.profiles.exists() {
+fn inspect_profiles_lock(paths: &Paths) -> Check {
+    if !paths.profiles.exists() {
         Check::new(Level::Info, "profiles lock", "not created yet")
     } else if !paths.profiles_lock.exists() {
         Check::new(Level::Info, "profiles lock", "missing")
@@ -308,10 +352,22 @@ fn inspect_profiles_lock(paths: &Paths) -> [Check; 1] {
         Check::new(Level::Error, "profiles lock", "exists but is not a file")
     } else {
         match lock_usage(paths) {
-            Ok(_lock) => Check::new(Level::Ok, "profiles lock", "acquired"),
+            Ok(_lock) => {
+                #[cfg(unix)]
+                if let Ok(mode) = current_mode(&paths.profiles_lock)
+                    && mode != 0o600
+                {
+                    return Check::new(
+                        Level::Warn,
+                        "profiles lock",
+                        format!("mode {mode:o} (run `doctor --fix`)"),
+                    );
+                }
+                Check::new(Level::Ok, "profiles lock", "acquired")
+            }
             Err(err) => Check::new(Level::Error, "profiles lock", err),
         }
-    }]
+    }
 }
 
 fn inspect_saved_profiles(paths: &Paths) -> SavedProfilesReport {
@@ -319,7 +375,10 @@ fn inspect_saved_profiles(paths: &Paths) -> SavedProfilesReport {
     let mut valid = 0usize;
     let mut invalid_ids = Vec::new();
 
-    match profile_paths(&paths.profiles) {
+    match profile_files(&paths.profiles).map(|mut v| {
+        v.sort();
+        v
+    }) {
         Ok(paths_list) => {
             for path in paths_list {
                 let id = profile_id_from_path(&path).unwrap_or_else(|| path.display().to_string());
@@ -369,16 +428,12 @@ fn inspect_saved_profiles(paths: &Paths) -> SavedProfilesReport {
 
 fn inspect_current_profile(
     paths: &Paths,
+    auth: &AuthState,
     tokens: &BTreeMap<String, Result<crate::Tokens, String>>,
 ) -> Check {
-    match auth_state(paths) {
+    match auth {
         AuthState::Missing => Check::new(Level::Info, "current profile", "no auth file"),
-        AuthState::Incomplete(reason) => Check::new(
-            Level::Warn,
-            "current profile",
-            format!("unavailable ({reason})"),
-        ),
-        AuthState::Invalid(reason) => Check::new(
+        AuthState::Incomplete(reason) | AuthState::Invalid(reason) => Check::new(
             Level::Warn,
             "current profile",
             format!("unavailable ({reason})"),
@@ -395,17 +450,14 @@ fn inspect_current_profile(
 }
 
 fn auth_state(paths: &Paths) -> AuthState {
-    match read_auth_file(&paths.auth) {
-        Ok(_) => match read_tokens(&paths.auth) {
-            Ok(tokens) => {
-                if is_profile_ready(&tokens) {
-                    AuthState::Valid
-                } else {
-                    AuthState::Incomplete("present but incomplete (run `codex login`)".to_string())
-                }
+    match read_tokens(&paths.auth) {
+        Ok(tokens) => {
+            if is_profile_ready(&tokens) {
+                AuthState::Valid
+            } else {
+                AuthState::Incomplete("present but incomplete (run `codex login`)".to_string())
             }
-            Err(err) => AuthState::Invalid(err),
-        },
+        }
         Err(err) => {
             if !paths.auth.exists() {
                 AuthState::Missing
@@ -425,6 +477,73 @@ fn install_source_label(source: InstallSource) -> &'static str {
     }
 }
 
+#[cfg(unix)]
+fn repair_storage_permissions(paths: &Paths) -> Result<Vec<String>, String> {
+    let mut repairs = Vec::new();
+
+    if paths.auth.exists() && set_mode_if_needed(&paths.auth, 0o600)? {
+        repairs.push("Repaired auth file permissions".to_string());
+    }
+
+    if set_mode_if_needed(&paths.profiles, 0o700)? {
+        repairs.push("Repaired profiles directory permissions".to_string());
+    }
+
+    let mut repaired_metadata = 0usize;
+    for path in [&paths.profiles_index, &paths.profiles_lock] {
+        if path.exists() && set_mode_if_needed(path, 0o600)? {
+            repaired_metadata += 1;
+        }
+    }
+    if repaired_metadata > 0 {
+        repairs.push(format!(
+            "Repaired profile metadata permissions ({repaired_metadata})"
+        ));
+    }
+
+    let mut repaired_profiles = 0usize;
+    for path in profile_files(&paths.profiles)? {
+        if set_mode_if_needed(&path, 0o600)? {
+            repaired_profiles += 1;
+        }
+    }
+    if repaired_profiles > 0 {
+        repairs.push(format!(
+            "Repaired saved profile permissions ({repaired_profiles})"
+        ));
+    }
+
+    Ok(repairs)
+}
+
+#[cfg(not(unix))]
+fn repair_storage_permissions(_paths: &Paths) -> Result<Vec<String>, String> {
+    Ok(Vec::new())
+}
+
+#[cfg(unix)]
+fn set_mode_if_needed(path: &Path, mode: u32) -> Result<bool, String> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let current_mode = current_mode(path)?;
+    if current_mode == mode {
+        return Ok(false);
+    }
+    fs::set_permissions(path, fs::Permissions::from_mode(mode)).map_err(|err| err.to_string())?;
+    Ok(true)
+}
+
+#[cfg(unix)]
+fn current_mode(path: &Path) -> Result<u32, String> {
+    use std::os::unix::fs::PermissionsExt;
+
+    Ok(fs::metadata(path)
+        .map_err(|err| err.to_string())?
+        .permissions()
+        .mode()
+        & 0o777)
+}
+
 fn profiles_index_len_read_only(path: &Path) -> Result<usize, String> {
     let raw = fs::read_to_string(path).map_err(|err| err.to_string())?;
     let value: serde_json::Value = serde_json::from_str(&raw).map_err(|err| err.to_string())?;
@@ -438,34 +557,4 @@ fn profiles_index_len_read_only(path: &Path) -> Result<usize, String> {
         })
         .unwrap_or(0);
     Ok(count)
-}
-
-fn profile_paths(profiles_dir: &Path) -> Result<Vec<PathBuf>, String> {
-    if !profiles_dir.exists() {
-        return Ok(Vec::new());
-    }
-    if !profiles_dir.is_dir() {
-        return Err("profiles directory exists but is not a directory".to_string());
-    }
-
-    let mut paths = Vec::new();
-    let entries = fs::read_dir(profiles_dir).map_err(|err| err.to_string())?;
-    for entry in entries {
-        let path = entry.map_err(|err| err.to_string())?.path();
-        if !path.is_file() {
-            continue;
-        }
-        if path.file_name().and_then(|name| name.to_str()) == Some("profiles.json") {
-            continue;
-        }
-        if path.file_name().and_then(|name| name.to_str()) == Some("update.json") {
-            continue;
-        }
-        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
-            continue;
-        }
-        paths.push(path);
-    }
-    paths.sort();
-    Ok(paths)
 }

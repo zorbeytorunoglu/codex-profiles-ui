@@ -1,6 +1,7 @@
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 use serde_with::{NoneAsEmptyString, serde_as};
 use std::path::Path;
 use std::time::Duration;
@@ -11,11 +12,9 @@ use crate::{
     AUTH_ERR_INVALID_JSON_RELOGIN, AUTH_ERR_INVALID_REFRESH_RESPONSE,
     AUTH_ERR_INVALID_TOKENS_OBJECT, AUTH_ERR_MISSING_TOKENS, AUTH_ERR_PROFILE_MISSING_ACCESS_TOKEN,
     AUTH_ERR_PROFILE_MISSING_ACCOUNT, AUTH_ERR_PROFILE_MISSING_EMAIL_PLAN,
-    AUTH_ERR_PROFILE_NO_REFRESH_TOKEN, AUTH_ERR_READ, AUTH_ERR_REFRESH_EXPIRED,
-    AUTH_ERR_REFRESH_FAILED_CODE, AUTH_ERR_REFRESH_FAILED_OTHER,
-    AUTH_ERR_REFRESH_MISSING_ACCESS_TOKEN, AUTH_ERR_REFRESH_REUSED, AUTH_ERR_REFRESH_REVOKED,
-    AUTH_ERR_REFRESH_UNKNOWN_401, AUTH_ERR_SERIALIZE_AUTH, AUTH_ERR_WRITE_AUTH,
-    AUTH_REFRESH_401_TITLE, AUTH_RELOGIN_AND_SAVE, UI_ERROR_TWO_LINE, write_atomic,
+    AUTH_ERR_PROFILE_NO_REFRESH_TOKEN, AUTH_ERR_READ, AUTH_ERR_REFRESH_FAILED_OTHER,
+    AUTH_ERR_REFRESH_MISSING_ACCESS_TOKEN, AUTH_ERR_REFRESH_STATE_CHANGED, AUTH_ERR_SERIALIZE_AUTH,
+    AUTH_ERR_UNSUPPORTED_STORE_MODE, AUTH_ERR_WRITE_AUTH, write_atomic,
 };
 
 const API_KEY_PREFIX: &str = "api-key-";
@@ -26,6 +25,25 @@ const API_KEY_SUFFIX_LEN: usize = 16;
 const REFRESH_TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
 const REFRESH_TOKEN_URL_OVERRIDE_ENV_VAR: &str = "CODEX_REFRESH_TOKEN_URL_OVERRIDE";
 const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AuthStoreMode {
+    File,
+    Keyring,
+    Auto,
+    Ephemeral,
+}
+
+impl AuthStoreMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            AuthStoreMode::File => "file",
+            AuthStoreMode::Keyring => "keyring",
+            AuthStoreMode::Auto => "auto",
+            AuthStoreMode::Ephemeral => "ephemeral",
+        }
+    }
+}
 
 #[derive(Debug, Deserialize)]
 pub struct AuthFile {
@@ -108,6 +126,14 @@ pub fn read_tokens(path: &Path) -> Result<Tokens, String> {
 }
 
 pub fn read_auth_file(path: &Path) -> Result<AuthFile, String> {
+    let store_mode = read_auth_store_mode_for_path(path)?;
+    if store_mode != AuthStoreMode::File {
+        return Err(crate::msg1(
+            AUTH_ERR_UNSUPPORTED_STORE_MODE,
+            store_mode.as_str(),
+        ));
+    }
+
     let data = std::fs::read_to_string(path).map_err(|err| {
         if err.kind() == std::io::ErrorKind::NotFound {
             AUTH_ERR_FILE_NOT_FOUND.to_string()
@@ -147,12 +173,7 @@ pub fn is_profile_ready(tokens: &Tokens) -> bool {
     if token_account_id(tokens).is_none() {
         return false;
     }
-    if !tokens
-        .access_token
-        .as_deref()
-        .map(|value| !value.is_empty())
-        .unwrap_or(false)
-    {
+    if tokens.access_token.as_deref().is_none_or(str::is_empty) {
         return false;
     }
     let (email, plan) = extract_email_and_plan(tokens);
@@ -406,6 +427,11 @@ struct RefreshResponse {
 }
 
 pub fn refresh_profile_tokens(path: &Path, tokens: &mut Tokens) -> Result<(), String> {
+    let disk_tokens = read_tokens(path)?;
+    if !same_refresh_state(&disk_tokens, tokens) {
+        return Err(AUTH_ERR_REFRESH_STATE_CHANGED.to_string());
+    }
+
     let refresh_token = tokens
         .refresh_token
         .as_deref()
@@ -417,6 +443,80 @@ pub fn refresh_profile_tokens(path: &Path, tokens: &mut Tokens) -> Result<(), St
     Ok(())
 }
 
+fn same_refresh_state(left: &Tokens, right: &Tokens) -> bool {
+    left.account_id == right.account_id
+        && left.id_token == right.id_token
+        && left.access_token == right.access_token
+        && left.refresh_token == right.refresh_token
+}
+
+fn read_auth_store_mode_for_path(path: &Path) -> Result<AuthStoreMode, String> {
+    if path.file_name().and_then(|name| name.to_str()) != Some("auth.json") {
+        return Ok(AuthStoreMode::File);
+    }
+    let Some(config_path) = path.parent().map(|dir| dir.join("config.toml")) else {
+        return Ok(AuthStoreMode::File);
+    };
+    let Ok(contents) = std::fs::read_to_string(config_path) else {
+        return Ok(AuthStoreMode::File);
+    };
+    for line in contents.lines() {
+        if let Some(value) = parse_config_value(line, "cli_auth_credentials_store_mode") {
+            return parse_auth_store_mode(&value);
+        }
+    }
+    Ok(AuthStoreMode::File)
+}
+
+fn parse_auth_store_mode(value: &str) -> Result<AuthStoreMode, String> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "file" => Ok(AuthStoreMode::File),
+        "keyring" => Ok(AuthStoreMode::Keyring),
+        "auto" => Ok(AuthStoreMode::Auto),
+        "ephemeral" => Ok(AuthStoreMode::Ephemeral),
+        other => Err(crate::msg1(AUTH_ERR_UNSUPPORTED_STORE_MODE, other)),
+    }
+}
+
+fn parse_config_value(line: &str, key: &str) -> Option<String> {
+    let line = line.trim();
+    if line.is_empty() || line.starts_with('#') {
+        return None;
+    }
+    let (config_key, raw_value) = line.split_once('=')?;
+    if config_key.trim() != key {
+        return None;
+    }
+    let value = strip_inline_comment(raw_value).trim();
+    if value.is_empty() {
+        return None;
+    }
+    let value = value.trim_matches('"').trim_matches('\'').trim();
+    if value.is_empty() {
+        return None;
+    }
+    Some(value.to_string())
+}
+
+fn strip_inline_comment(value: &str) -> &str {
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut escape = false;
+    for (idx, ch) in value.char_indices() {
+        match ch {
+            '"' if !in_single && !escape => in_double = !in_double,
+            '\'' if !in_double => in_single = !in_single,
+            '#' if !in_single && !in_double => return value[..idx].trim_end(),
+            _ => {}
+        }
+        escape = in_double && ch == '\\' && !escape;
+        if ch != '\\' {
+            escape = false;
+        }
+    }
+    value.trim_end()
+}
+
 fn refresh_access_token(refresh_token: &str) -> Result<RefreshResponse, String> {
     let request = RefreshRequest {
         client_id: CLIENT_ID,
@@ -424,8 +524,7 @@ fn refresh_access_token(refresh_token: &str) -> Result<RefreshResponse, String> 
         refresh_token: refresh_token.to_string(),
         scope: "openid profile email",
     };
-    let endpoint = std::env::var(REFRESH_TOKEN_URL_OVERRIDE_ENV_VAR)
-        .unwrap_or_else(|_| REFRESH_TOKEN_URL.to_string());
+    let endpoint = refresh_token_url();
     let config = ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(5)))
         .http_status_as_error(false)
@@ -437,57 +536,17 @@ fn refresh_access_token(refresh_token: &str) -> Result<RefreshResponse, String> 
         .send_json(&request)
         .map_err(|other| crate::msg1(AUTH_ERR_REFRESH_FAILED_OTHER, other))?;
 
-    let status = response.status();
-    if status == 401 {
-        let body = response.into_body().read_to_string().unwrap_or_default();
-        return Err(classify_refresh_unauthorized_message(&body));
-    }
-    if !status.is_success() {
-        return Err(crate::msg1(AUTH_ERR_REFRESH_FAILED_CODE, status));
+    if !response.status().is_success() {
+        return Err(
+            crate::UnexpectedHttpError::from_ureq_response(response, Some(&endpoint))
+                .plain_message(),
+        );
     }
 
     response
         .into_body()
         .read_json::<RefreshResponse>()
         .map_err(|err| crate::msg1(AUTH_ERR_INVALID_REFRESH_RESPONSE, err))
-}
-
-fn classify_refresh_unauthorized_message(body: &str) -> String {
-    match extract_refresh_error_code(body).as_deref() {
-        Some("refresh_token_expired") => AUTH_ERR_REFRESH_EXPIRED.to_string(),
-        Some("refresh_token_reused") => AUTH_ERR_REFRESH_REUSED.to_string(),
-        Some("refresh_token_invalidated") => AUTH_ERR_REFRESH_REVOKED.to_string(),
-        _ => {
-            if body.trim().is_empty() {
-                crate::msg2(
-                    UI_ERROR_TWO_LINE,
-                    AUTH_REFRESH_401_TITLE,
-                    AUTH_RELOGIN_AND_SAVE,
-                )
-            } else {
-                AUTH_ERR_REFRESH_UNKNOWN_401.to_string()
-            }
-        }
-    }
-}
-
-fn extract_refresh_error_code(body: &str) -> Option<String> {
-    let value: serde_json::Value = serde_json::from_str(body).ok()?;
-    if let Some(code) = value
-        .get("error")
-        .and_then(|error| error.get("code"))
-        .and_then(serde_json::Value::as_str)
-    {
-        return Some(code.to_ascii_lowercase());
-    }
-    if let Some(code) = value
-        .get("error")
-        .and_then(serde_json::Value::as_str)
-        .or_else(|| value.get("code").and_then(serde_json::Value::as_str))
-    {
-        return Some(code.to_ascii_lowercase());
-    }
-    None
 }
 
 fn apply_refresh(tokens: &mut Tokens, refreshed: &RefreshResponse) -> Result<(), String> {
@@ -551,6 +610,11 @@ fn update_auth_tokens(path: &Path, refreshed: &RefreshResponse) -> Result<(), St
         .map_err(|err| crate::msg2(AUTH_ERR_WRITE_AUTH, path.display(), err))
 }
 
+fn refresh_token_url() -> String {
+    std::env::var(REFRESH_TOKEN_URL_OVERRIDE_ENV_VAR)
+        .unwrap_or_else(|_| REFRESH_TOKEN_URL.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -601,6 +665,46 @@ mod tests {
         fs::write(&empty_path, "{}").unwrap();
         let err = read_tokens(&empty_path).unwrap_err();
         assert!(err.contains("Missing tokens"));
+    }
+
+    #[test]
+    fn read_tokens_refuses_non_file_store_modes() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let auth_path = dir.path().join("auth.json");
+        let auth = serde_json::json!({
+            "tokens": {"account_id": "acct", "access_token": "acc"}
+        });
+        fs::write(&auth_path, serde_json::to_string(&auth).unwrap()).unwrap();
+
+        for mode in ["keyring", "auto", "ephemeral"] {
+            fs::write(
+                dir.path().join("config.toml"),
+                format!("cli_auth_credentials_store_mode = \"{mode}\"\n"),
+            )
+            .unwrap();
+            let err = read_tokens(&auth_path).unwrap_err();
+            assert!(err.contains(mode));
+            assert!(err.contains("file-backed auth"));
+        }
+    }
+
+    #[test]
+    fn read_tokens_allows_file_store_mode() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let auth_path = dir.path().join("auth.json");
+        let auth = serde_json::json!({
+            "tokens": {"account_id": "acct", "access_token": "acc"}
+        });
+        fs::write(&auth_path, serde_json::to_string(&auth).unwrap()).unwrap();
+        fs::write(
+            dir.path().join("config.toml"),
+            "cli_auth_credentials_store_mode = \"file\"\n",
+        )
+        .unwrap();
+
+        let tokens = read_tokens(&auth_path).unwrap();
+        assert_eq!(tokens.account_id.as_deref(), Some("acct"));
+        assert_eq!(tokens.access_token.as_deref(), Some("acc"));
     }
 
     #[test]
@@ -829,6 +933,47 @@ mod tests {
     }
 
     #[test]
+    fn refresh_profile_tokens_refuses_disk_mismatch() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        let _env = set_env_guard(
+            REFRESH_TOKEN_URL_OVERRIDE_ENV_VAR,
+            Some("http://127.0.0.1:9"),
+        );
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("auth.json");
+        let initial = serde_json::json!({
+            "tokens": {
+                "account_id": "acct",
+                "access_token": "old-access",
+                "refresh_token": "rt"
+            }
+        });
+        fs::write(&path, serde_json::to_string(&initial).unwrap()).unwrap();
+        let mut tokens = read_tokens(&path).unwrap();
+
+        let drifted = serde_json::json!({
+            "tokens": {
+                "account_id": "other-account",
+                "access_token": "disk-access",
+                "refresh_token": "disk-refresh"
+            }
+        });
+        fs::write(&path, serde_json::to_string(&drifted).unwrap()).unwrap();
+
+        let err = refresh_profile_tokens(&path, &mut tokens).unwrap_err();
+        assert!(err.contains("changed on disk"));
+        assert_eq!(tokens.account_id.as_deref(), Some("acct"));
+        assert_eq!(tokens.access_token.as_deref(), Some("old-access"));
+        assert_eq!(tokens.refresh_token.as_deref(), Some("rt"));
+
+        let stored = fs::read_to_string(&path).unwrap();
+        assert!(stored.contains("other-account"));
+        assert!(stored.contains("disk-access"));
+        assert!(stored.contains("disk-refresh"));
+    }
+
+    #[test]
     fn set_env_clears_value() {
         let _guard = ENV_MUTEX.lock().unwrap();
         {
@@ -998,7 +1143,8 @@ mod tests {
         {
             let _env = set_env_guard(REFRESH_TOKEN_URL_OVERRIDE_ENV_VAR, Some(&err_url));
             let err = refresh_access_token("token").unwrap_err();
-            assert!(err.contains("unauthorized"));
+            assert!(err.contains("Unknown error\nunexpected status 401 Unauthorized"));
+            assert!(err.contains("\nURL: http://"));
         }
 
         let expired_body = r#"{"error":{"code":"refresh_token_expired"}}"#;
@@ -1011,7 +1157,8 @@ mod tests {
         {
             let _env = set_env_guard(REFRESH_TOKEN_URL_OVERRIDE_ENV_VAR, Some(&expired_url));
             let err = refresh_access_token("token").unwrap_err();
-            assert!(err.contains("expired"));
+            assert!(err.contains("unexpected status 401 Unauthorized"));
+            assert!(err.contains("refresh_token_expired"));
         }
 
         let reused_body = r#"{"error":{"code":"refresh_token_reused"}}"#;
@@ -1024,8 +1171,8 @@ mod tests {
         {
             let _env = set_env_guard(REFRESH_TOKEN_URL_OVERRIDE_ENV_VAR, Some(&reused_url));
             let err = refresh_access_token("token").unwrap_err();
-            assert!(err.contains("Token refresh unauthorized (401)"));
-            assert!(err.contains("Authenticate again with `codex login`"));
+            assert!(err.contains("unexpected status 401 Unauthorized"));
+            assert!(err.contains("refresh_token_reused"));
         }
 
         let revoked_body = r#"{"error":{"code":"refresh_token_invalidated"}}"#;
@@ -1038,7 +1185,8 @@ mod tests {
         {
             let _env = set_env_guard(REFRESH_TOKEN_URL_OVERRIDE_ENV_VAR, Some(&revoked_url));
             let err = refresh_access_token("token").unwrap_err();
-            assert!(err.contains("revoked"));
+            assert!(err.contains("unexpected status 401 Unauthorized"));
+            assert!(err.contains("refresh_token_invalidated"));
         }
     }
 

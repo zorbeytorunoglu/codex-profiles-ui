@@ -1,7 +1,9 @@
 pub const CANCELLED_MESSAGE: &str = "Cancelled.";
 
+#[cfg(test)]
 pub const AUTH_REFRESH_401_TITLE: &str = "Token refresh unauthorized (401)";
 
+#[cfg(test)]
 pub const AUTH_RELOGIN_AND_SAVE: &str =
     "Authenticate again with `codex login`, then save this profile";
 
@@ -22,13 +24,10 @@ pub const AUTH_ERR_PROFILE_MISSING_ACCESS_TOKEN: &str =
     "Error: Profile is missing an access token.";
 pub const AUTH_ERR_PROFILE_NO_REFRESH_TOKEN: &str =
     "Error: This profile has no refresh token. Run `codex login` and save again.";
-pub const AUTH_ERR_REFRESH_FAILED_CODE: &str = "Error: Token refresh failed. ({})";
+pub const AUTH_ERR_REFRESH_STATE_CHANGED: &str = "Error: Auth changed on disk. Reload and retry.";
+pub const AUTH_ERR_UNSUPPORTED_STORE_MODE: &str = "Error: Codex auth store mode `{}` is not yet supported. Configure file-backed auth to use codex-profiles.";
 pub const AUTH_ERR_REFRESH_FAILED_OTHER: &str = "Error: Token refresh failed: {}";
 pub const AUTH_ERR_INVALID_REFRESH_RESPONSE: &str = "Error: Invalid refresh response: {}";
-pub const AUTH_ERR_REFRESH_EXPIRED: &str = "Error: Token refresh unauthorized (401)\nRefresh token expired. Authenticate again with `codex login`, then save this profile.";
-pub const AUTH_ERR_REFRESH_REUSED: &str = "Error: Token refresh unauthorized (401)\nAuthenticate again with `codex login`, then save this profile.";
-pub const AUTH_ERR_REFRESH_REVOKED: &str = "Error: Token refresh unauthorized (401)\nRefresh token revoked. Authenticate again with `codex login`, then save this profile.";
-pub const AUTH_ERR_REFRESH_UNKNOWN_401: &str = "Error: Token refresh unauthorized (401)\nAuthenticate again with `codex login`, then save this profile.";
 pub const AUTH_ERR_REFRESH_MISSING_ACCESS_TOKEN: &str =
     "Error: Refresh response is missing an access token.";
 pub const AUTH_ERR_INVALID_JSON: &str = "Error: Invalid JSON in {}: {}";
@@ -41,16 +40,8 @@ pub const USAGE_UNAVAILABLE_API_KEY_TITLE: &str = "Usage unavailable for API key
 pub const USAGE_UNAVAILABLE_API_KEY_DETAIL: &str =
     "Rate-limit usage data is only available for ChatGPT account profiles.";
 
+#[cfg(test)]
 pub const USAGE_UNAVAILABLE_402_TITLE: &str = "Usage unavailable (402)";
-
-pub const USAGE_UNAVAILABLE_402_DETAIL: &str = "This account may not have usage access";
-
-pub const USAGE_ERR_UNAUTHORIZED_401_TITLE: &str = "Unauthorized (401)";
-pub const USAGE_ERR_ACCESS_DENIED_403: &str =
-    "Error: Access denied for usage data on this account. (403)";
-pub const USAGE_ERR_RATE_LIMITED_429: &str =
-    "Error: Usage request was rate-limited. Try again shortly. (429)";
-pub const USAGE_ERR_REQUEST_FAILED_CODE: &str = "Error: Usage request failed. ({})";
 pub const USAGE_ERR_SERVICE_UNREACHABLE: &str = "Error: Could not reach usage service: {}";
 pub const USAGE_ERR_INVALID_RESPONSE: &str = "Error: Invalid usage response: {}";
 pub const USAGE_UNAVAILABLE_DEFAULT: &str = "Data not available";
@@ -64,7 +55,6 @@ pub const PROFILE_MSG_SAVED_WITH: &str = "Saved profile {}";
 pub const PROFILE_MSG_LOADED_WITH: &str = "Loaded profile {}";
 pub const PROFILE_MSG_DELETED_WITH: &str = "Deleted profile {}";
 pub const PROFILE_MSG_DELETED_COUNT: &str = "Deleted {} profiles.";
-pub const PROFILE_MSG_REMOVED_INVALID: &str = "Removed invalid profile {} ({})";
 pub const PROFILE_MSG_LABEL_SET: &str = "Set label '{}' for profile {}";
 pub const PROFILE_MSG_LABEL_CLEARED: &str = "Cleared label for profile {}";
 
@@ -77,7 +67,6 @@ pub const PROFILE_ERR_WRITE_INDEX: &str = "Error: Failed to write profiles index
 pub const PROFILE_ERR_LABEL_EXISTS: &str = "Error: Label '{}' already exists. {}";
 pub const PROFILE_ERR_LABEL_NOT_FOUND: &str = "Error: Label '{}' was not found. {}";
 pub const PROFILE_ERR_READ_PROFILES_DIR: &str = "Error: Cannot read profiles directory: {}";
-pub const PROFILE_ERR_REMOVE_INVALID: &str = "Error: Failed to remove invalid profile {}: {}";
 pub const PROFILE_ERR_RENAME_PROFILE: &str = "Error: Failed to rename profile {}: {}";
 pub const PROFILE_ERR_SYNC_CURRENT: &str = "Error: Failed to sync current profile: {}";
 pub const PROFILE_ERR_COPY_CONTEXT: &str = "Error: Failed to {} {}: {}";
@@ -94,8 +83,6 @@ pub const PROFILE_ERR_ID_NO_MATCH: &str =
 pub const PROFILE_ERR_DELETE_CONFIRM_REQUIRED: &str =
     "Error: Deletion requires confirmation. Re-run with `--yes` to skip the prompt.";
 pub const PROFILE_ERR_PROMPT_DELETE: &str = "Error: Could not prompt for delete: {}";
-pub const PROFILE_ERR_REFRESHED_ACCESS_MISSING: &str =
-    "Error: Refreshed profile is missing an access token.";
 pub const PROFILE_ERR_PROMPT_CONTEXT: &str = "Error: Could not prompt for {}: {}";
 pub const PROFILE_ERR_LABEL_EMPTY: &str = "Error: Label cannot be empty.";
 pub const PROFILE_MSG_NOT_FOUND: &str = "Selected profile not found. {}";
@@ -134,7 +121,7 @@ pub const UI_HINT_LIST_PROFILES: &str = "Run {list} to see saved profiles.";
 pub const UI_NORMALIZED_NOT_LOGGED_IN: &str = "Not logged in. Run `codex login`.";
 pub const UI_NORMALIZED_AUTH_INVALID: &str = "Auth file is invalid. Run `codex login`.";
 pub const UI_NORMALIZED_AUTH_INCOMPLETE: &str = "Auth is incomplete. Run `codex login`.";
-pub const UI_ERROR_PREFIX: &str = "Error:";
+pub const UI_ERROR_PREFIX: &str = "Error: ";
 pub const UI_ERROR_TWO_LINE: &str = "Error: {}\n{}";
 pub const UI_UNKNOWN_PROFILE: &str = "Unknown profile{}";
 

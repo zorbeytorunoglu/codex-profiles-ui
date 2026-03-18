@@ -21,6 +21,9 @@ pub enum Commands {
         #[arg(value_name = "label")]
         #[arg(long)]
         label: Option<String>,
+        /// Print machine-readable JSON output
+        #[arg(long)]
+        json: bool,
     },
     /// Load a saved profile
     Load {
@@ -35,6 +38,9 @@ pub enum Commands {
         /// Continue without saving the current unsaved profile first
         #[arg(long)]
         force: bool,
+        /// Print machine-readable JSON output
+        #[arg(long)]
+        json: bool,
     },
     /// List saved profiles
     List {
@@ -58,12 +64,18 @@ pub enum Commands {
         /// Write the export bundle to this new file
         #[arg(long, value_name = "file")]
         output: PathBuf,
+        /// Print machine-readable JSON output
+        #[arg(long)]
+        json: bool,
     },
     /// Import saved profiles from an export bundle
     Import {
-        /// Read the export bundle from this file (fails on id, label, or default conflicts)
+        /// Read the export bundle from this file (fails on id or label conflicts)
         #[arg(long, value_name = "file")]
         input: PathBuf,
+        /// Print machine-readable JSON output
+        #[arg(long)]
+        json: bool,
     },
     /// Run local diagnostics
     Doctor {
@@ -78,11 +90,6 @@ pub enum Commands {
     Label {
         #[command(subcommand)]
         command: LabelCommands,
-    },
-    /// Manage the default saved profile
-    Default {
-        #[command(subcommand)]
-        command: DefaultCommands,
     },
     /// Show usage details for the current or saved profiles
     Status {
@@ -125,6 +132,9 @@ pub enum Commands {
         #[arg(value_name = "profile-id")]
         #[arg(long, conflicts_with = "label", action = ArgAction::Append)]
         id: Vec<String>,
+        /// Print machine-readable JSON output
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -143,6 +153,9 @@ pub enum LabelCommands {
         /// New label to assign
         #[arg(long, value_name = "label")]
         to: String,
+        /// Print machine-readable JSON output
+        #[arg(long)]
+        json: bool,
     },
     /// Clear the label on a saved profile
     Clear {
@@ -154,6 +167,9 @@ pub enum LabelCommands {
         #[arg(value_name = "profile-id")]
         #[arg(long, conflicts_with = "label", required_unless_present = "label")]
         id: Option<String>,
+        /// Print machine-readable JSON output
+        #[arg(long)]
+        json: bool,
     },
     /// Rename an existing label
     Rename {
@@ -164,26 +180,10 @@ pub enum LabelCommands {
         /// New label to assign
         #[arg(long, value_name = "label")]
         to: String,
+        /// Print machine-readable JSON output
+        #[arg(long)]
+        json: bool,
     },
-}
-
-#[derive(Subcommand)]
-pub enum DefaultCommands {
-    /// Set the default saved profile
-    Set {
-        /// Select the profile matching this label
-        #[arg(value_name = "label")]
-        #[arg(long, conflicts_with = "id", required_unless_present = "id")]
-        label: Option<String>,
-        /// Select the profile matching this exact id
-        #[arg(value_name = "profile-id")]
-        #[arg(long, conflicts_with = "label", required_unless_present = "label")]
-        id: Option<String>,
-    },
-    /// Clear the default saved profile
-    Clear,
-    /// Show the current default saved profile
-    Show,
 }
 
 pub fn command_with_examples() -> Command {
@@ -196,6 +196,6 @@ pub fn command_with_examples() -> Command {
 
 fn examples_root(name: &str) -> String {
     format!(
-        "Examples:\n  {name} save --label work\n  {name} load --label work\n  {name} load --id mail@example.com-team --force\n  {name} list\n  {name} list --json\n  {name} export --output profiles-export.json\n  {name} import --input profiles-export.json\n  {name} doctor\n  {name} doctor --json\n  {name} doctor --fix\n  {name} label rename --label work --to personal\n  {name} default set --label personal\n  {name} default show\n  {name} status\n  {name} status --label personal\n  {name} status --id mail@example.com-team --json\n  {name} status --json\n  {name} status --all --json\n  {name} delete --label work\n  {name} delete --id mail@example.com-team --yes"
+        "Common options:\n  --json  Print machine-readable JSON output for commands that support it\n\nExamples:\n  {name} save --label work\n  {name} load --label work\n  {name} list --json\n  {name} status --all --json\n  {name} export --output profiles-export.json\n  {name} import --input profiles-export.json\n  {name} delete --label work --yes\n\nRun `{name} help <command>` for command-specific options."
     )
 }

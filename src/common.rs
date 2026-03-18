@@ -1,4 +1,7 @@
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 use directories::BaseDirs;
+use serde_json::Value;
 use std::env;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -19,6 +22,8 @@ use crate::{
     COMMON_ERR_SET_PERMISSIONS, COMMON_ERR_SET_TEMP_PERMISSIONS, COMMON_ERR_WRITE_LOCK_FILE,
     COMMON_ERR_WRITE_TEMP,
 };
+
+const UNEXPECTED_HTTP_BODY_MAX_BYTES: usize = 1000;
 
 pub struct Paths {
     pub codex: PathBuf,
@@ -198,17 +203,20 @@ pub fn ensure_paths(paths: &Paths) -> Result<(), String> {
     ensure_file_or_absent(&paths.update_cache)?;
     ensure_file_or_absent(&paths.profiles_lock)?;
 
-    OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&paths.profiles_lock)
-        .map_err(|err| {
-            crate::msg2(
-                COMMON_ERR_WRITE_LOCK_FILE,
-                paths.profiles_lock.display(),
-                err,
-            )
-        })?;
+    let mut options = OpenOptions::new();
+    options.create(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options.open(&paths.profiles_lock).map_err(|err| {
+        crate::msg2(
+            COMMON_ERR_WRITE_LOCK_FILE,
+            paths.profiles_lock.display(),
+            err,
+        )
+    })?;
 
     Ok(())
 }
@@ -218,7 +226,6 @@ pub fn write_atomic(path: &Path, contents: &[u8]) -> Result<(), String> {
     write_atomic_with_permissions(path, contents, permissions)
 }
 
-#[cfg(test)]
 pub fn write_atomic_with_mode(path: &Path, contents: &[u8], mode: u32) -> Result<(), String> {
     #[cfg(unix)]
     {
@@ -230,6 +237,17 @@ pub fn write_atomic_with_mode(path: &Path, contents: &[u8], mode: u32) -> Result
     {
         let _ = mode;
         write_atomic_with_permissions(path, contents, None)
+    }
+}
+
+pub fn write_atomic_private(path: &Path, contents: &[u8]) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        write_atomic_with_mode(path, contents, 0o600)
+    }
+    #[cfg(not(unix))]
+    {
+        write_atomic(path, contents)
     }
 }
 
@@ -330,6 +348,281 @@ fn ensure_file_or_absent(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+#[derive(Clone, Debug)]
+pub struct UnexpectedHttpError {
+    status: u16,
+    status_text: Option<String>,
+    body: String,
+    url: Option<String>,
+    cf_ray: Option<String>,
+    request_id: Option<String>,
+    identity_authorization_error: Option<String>,
+    identity_error_code: Option<String>,
+}
+
+impl UnexpectedHttpError {
+    pub fn from_ureq_response(
+        response: ureq::http::Response<ureq::Body>,
+        url: Option<&str>,
+    ) -> Self {
+        let status = response.status();
+        let request_id = header_value(&response, "x-request-id")
+            .or_else(|| header_value(&response, "x-oai-request-id"));
+        let cf_ray = header_value(&response, "cf-ray");
+        let identity_authorization_error = header_value(&response, "x-openai-authorization-error");
+        let identity_error_code = header_value(&response, "x-error-json")
+            .and_then(|value| decode_identity_error_code(&value));
+        let body = response.into_body().read_to_string().unwrap_or_default();
+        Self {
+            status: status.as_u16(),
+            status_text: status.canonical_reason().map(str::to_string),
+            body,
+            url: url.map(str::to_string),
+            cf_ray,
+            request_id,
+            identity_authorization_error,
+            identity_error_code,
+        }
+    }
+
+    pub fn status_code(&self) -> u16 {
+        self.status
+    }
+
+    fn status_label(&self) -> String {
+        match self.status_text.as_deref() {
+            Some(text) if !text.is_empty() => format!("{} {}", self.status, text),
+            _ => self.status.to_string(),
+        }
+    }
+
+    fn extract_error_message(&self) -> Option<String> {
+        let json = self.parsed_body_json()?;
+        Self::extract_error_message_from_json(&json)
+    }
+
+    fn parsed_body_json(&self) -> Option<Value> {
+        serde_json::from_str::<Value>(&self.body).ok()
+    }
+
+    fn extract_error_message_from_json(json: &Value) -> Option<String> {
+        let message = json
+            .get("error")
+            .and_then(|error| error.get("message"))
+            .and_then(Value::as_str)?
+            .trim();
+        if message.is_empty() {
+            None
+        } else {
+            Some(message.to_string())
+        }
+    }
+
+    fn display_body(&self) -> String {
+        if let Some(message) = self.extract_error_message() {
+            return message;
+        }
+        let trimmed = self.body.trim();
+        if trimmed.is_empty() {
+            return "Unknown error".to_string();
+        }
+        truncate_with_ellipsis(trimmed, UNEXPECTED_HTTP_BODY_MAX_BYTES)
+    }
+
+    fn plain_body(&self) -> String {
+        let parsed = self.parsed_body_json();
+        if let Some(message) = parsed
+            .as_ref()
+            .and_then(Self::extract_error_message_from_json)
+            .or_else(|| parsed.as_ref().and_then(Self::extract_detail_message))
+        {
+            return sanitize_for_terminal(&message).trim().to_string();
+        }
+        sanitize_for_terminal(&self.display_body())
+            .trim()
+            .to_string()
+    }
+
+    fn extract_detail_message(json: &Value) -> Option<String> {
+        json.get("detail")
+            .and_then(|detail| detail.get("message"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|message| !message.is_empty())
+            .map(str::to_string)
+    }
+
+    fn extract_detail_code(&self) -> Option<String> {
+        let json = self.parsed_body_json()?;
+
+        json.get("detail")
+            .and_then(|detail| detail.get("code"))
+            .and_then(Value::as_str)
+            .or_else(|| {
+                json.get("error")
+                    .and_then(|error| error.get("code"))
+                    .and_then(Value::as_str)
+            })
+            .map(str::to_string)
+    }
+
+    fn plain_summary(&self) -> String {
+        sanitize_for_terminal(
+            &self
+                .extract_detail_code()
+                .unwrap_or_else(|| self.plain_body()),
+        )
+        .trim()
+        .to_string()
+    }
+
+    fn append_debug_context(&self, message: &mut String) {
+        if let Some(url) = &self.url {
+            message.push_str(&format!(", url: {url}"));
+        }
+        if let Some(cf_ray) = &self.cf_ray {
+            message.push_str(&format!(", cf-ray: {cf_ray}"));
+        }
+        if let Some(id) = &self.request_id {
+            message.push_str(&format!(", request id: {id}"));
+        }
+        if let Some(auth_error) = &self.identity_authorization_error {
+            message.push_str(&format!(", auth error: {auth_error}"));
+        }
+        if let Some(error_code) = &self.identity_error_code {
+            message.push_str(&format!(", auth error code: {error_code}"));
+        }
+    }
+
+    fn append_debug_context_lines(&self, lines: &mut Vec<String>) {
+        if let Some(url) = &self.url {
+            lines.push(format!("URL: {}", sanitize_for_terminal(url).trim()));
+        }
+        if let Some(cf_ray) = &self.cf_ray {
+            lines.push(format!("CF-Ray: {}", sanitize_for_terminal(cf_ray).trim()));
+        }
+        if let Some(id) = &self.request_id {
+            lines.push(format!("Request ID: {}", sanitize_for_terminal(id).trim()));
+        }
+        if let Some(auth_error) = &self.identity_authorization_error {
+            lines.push(format!(
+                "Auth Error: {}",
+                sanitize_for_terminal(auth_error).trim()
+            ));
+        }
+        if let Some(error_code) = &self.identity_error_code {
+            lines.push(format!(
+                "Auth Error Code: {}",
+                sanitize_for_terminal(error_code).trim()
+            ));
+        }
+    }
+
+    pub fn plain_message(&self) -> String {
+        let mut lines = vec![self.plain_summary()];
+        lines.push(format!("unexpected status {}", self.status_label()));
+        self.append_debug_context_lines(&mut lines);
+        lines.join("\n")
+    }
+}
+
+impl std::fmt::Display for UnexpectedHttpError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut message = format!(
+            "unexpected status {}: {}",
+            self.status_label(),
+            self.display_body()
+        );
+        self.append_debug_context(&mut message);
+        f.write_str(&message)
+    }
+}
+
+impl std::error::Error for UnexpectedHttpError {}
+
+fn header_value(response: &ureq::http::Response<ureq::Body>, name: &str) -> Option<String> {
+    response
+        .headers()
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string)
+}
+
+fn decode_identity_error_code(encoded: &str) -> Option<String> {
+    let decoded = STANDARD.decode(encoded.trim()).ok()?;
+    let json = serde_json::from_slice::<Value>(&decoded).ok()?;
+    json.get("error")
+        .and_then(|error| error.get("code"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
+fn truncate_with_ellipsis(text: &str, max_bytes: usize) -> String {
+    if text.len() <= max_bytes {
+        return text.to_string();
+    }
+    let mut cut = max_bytes;
+    while !text.is_char_boundary(cut) {
+        cut = cut.saturating_sub(1);
+    }
+    let mut truncated = text[..cut].to_string();
+    truncated.push_str("...");
+    truncated
+}
+
+pub(crate) fn sanitize_for_terminal(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let bytes = input.as_bytes();
+    let mut i = 0usize;
+
+    while i < bytes.len() {
+        if bytes[i] == 0x1b {
+            i += 1;
+            if i >= bytes.len() {
+                break;
+            }
+            match bytes[i] {
+                b'[' => {
+                    i += 1;
+                    while i < bytes.len() {
+                        let b = bytes[i];
+                        i += 1;
+                        if (0x40..=0x7e).contains(&b) {
+                            break;
+                        }
+                    }
+                }
+                b']' => {
+                    i += 1;
+                    while i < bytes.len() {
+                        if bytes[i] == 0x07 {
+                            i += 1;
+                            break;
+                        }
+                        if bytes[i] == 0x1b && i + 1 < bytes.len() && bytes[i + 1] == b'\\' {
+                            i += 2;
+                            break;
+                        }
+                        i += 1;
+                    }
+                }
+                _ => {
+                    i += 1;
+                }
+            }
+            continue;
+        }
+
+        let ch = input[i..].chars().next().expect("valid utf-8 char");
+        if !ch.is_control() || matches!(ch, '\n' | '\t') {
+            out.push(ch);
+        }
+        i += ch.len_utf8();
+    }
+
+    out
+}
+
 #[cfg(unix)]
 fn set_profile_permissions(path: &Path, perms: fs::Permissions) -> std::io::Result<()> {
     maybe_fail(FAIL_SET_PERMISSIONS)?;
@@ -339,9 +632,10 @@ fn set_profile_permissions(path: &Path, perms: fs::Permissions) -> std::io::Resu
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::make_paths;
+    use crate::test_utils::{make_paths, spawn_server};
     use std::ffi::OsString;
     use std::fs;
+    use ureq::Agent;
 
     fn with_failpoint<F: FnOnce()>(step: usize, f: F) {
         let _guard = FAILPOINT_LOCK.lock().unwrap();
@@ -363,6 +657,26 @@ mod tests {
         });
         f();
         FAILPOINT.with(|failpoint| failpoint.set(prev));
+    }
+
+    fn http_response(status: &str, headers: &[(&str, &str)], body: &str) -> String {
+        let mut response = format!("HTTP/1.1 {status}\r\n");
+        for (name, value) in headers {
+            response.push_str(name);
+            response.push_str(": ");
+            response.push_str(value);
+            response.push_str("\r\n");
+        }
+        response.push_str(&format!("Content-Length: {}\r\n\r\n{}", body.len(), body));
+        response
+    }
+
+    fn fetch_response(url: &str) -> ureq::http::Response<ureq::Body> {
+        let agent: Agent = ureq::Agent::config_builder()
+            .http_status_as_error(false)
+            .build()
+            .into();
+        agent.get(url).call().unwrap()
     }
 
     #[test]
@@ -431,6 +745,163 @@ mod tests {
         )
         .unwrap();
         assert_eq!(out, PathBuf::from("/tmp/home"));
+    }
+
+    #[test]
+    fn unexpected_http_error_plain_message_formats_multiline_for_unknown_body() {
+        let err = UnexpectedHttpError {
+            status: 402,
+            status_text: Some("Payment Required".to_string()),
+            body: r#"{"detail":{"code":"mystery_error"}}"#.to_string(),
+            url: Some("https://example.com/backend-api/wham/usage".to_string()),
+            cf_ray: Some("ray-123".to_string()),
+            request_id: Some("req-123".to_string()),
+            identity_authorization_error: None,
+            identity_error_code: None,
+        };
+
+        assert_eq!(
+            err.plain_message(),
+            concat!(
+                "mystery_error\n",
+                "unexpected status 402 Payment Required\n",
+                "URL: https://example.com/backend-api/wham/usage\n",
+                "CF-Ray: ray-123\n",
+                "Request ID: req-123"
+            )
+        );
+    }
+
+    #[test]
+    fn unexpected_http_error_plain_message_formats_multiline_for_known_code() {
+        let err = UnexpectedHttpError {
+            status: 402,
+            status_text: Some("Payment Required".to_string()),
+            body: r#"{"detail":{"code":"deactivated_workspace"}}"#.to_string(),
+            url: Some("https://example.com/backend-api/wham/usage".to_string()),
+            cf_ray: Some("ray-456".to_string()),
+            request_id: Some("req-456".to_string()),
+            identity_authorization_error: None,
+            identity_error_code: None,
+        };
+
+        assert_eq!(
+            err.plain_message(),
+            concat!(
+                "deactivated_workspace\n",
+                "unexpected status 402 Payment Required\n",
+                "URL: https://example.com/backend-api/wham/usage\n",
+                "CF-Ray: ray-456\n",
+                "Request ID: req-456"
+            )
+        );
+    }
+
+    #[test]
+    fn unexpected_http_error_plain_message_sanitizes_terminal_control_sequences() {
+        let err = UnexpectedHttpError {
+            status: 500,
+            status_text: Some("Internal Server Error".to_string()),
+            body: "\u{1b}]8;;https://evil\u{7}oops\u{1b}]8;;\u{7}".to_string(),
+            url: Some("https://example.com/\u{1b}[31musage\u{1b}[0m".to_string()),
+            cf_ray: Some("ray-\u{7}123".to_string()),
+            request_id: Some("req-\u{1b}[2K456".to_string()),
+            identity_authorization_error: None,
+            identity_error_code: None,
+        };
+
+        let plain = err.plain_message();
+        assert!(!plain.contains('\u{1b}'));
+        assert!(!plain.contains('\u{7}'));
+        assert!(plain.contains("oops"));
+        assert!(plain.contains("URL: https://example.com/usage"));
+        assert!(plain.contains("CF-Ray: ray-123"));
+        assert!(plain.contains("Request ID: req-456"));
+    }
+
+    #[test]
+    fn unexpected_http_error_uses_x_oai_request_id_fallback() {
+        let response = http_response(
+            "400 Bad Request",
+            &[("x-oai-request-id", "req-fallback")],
+            "plain body",
+        );
+        let url = spawn_server(response);
+        let response = fetch_response(&url);
+
+        let err = UnexpectedHttpError::from_ureq_response(response, Some(&url));
+        let rendered = err.to_string();
+        assert!(rendered.contains("request id: req-fallback"));
+    }
+
+    #[test]
+    fn unexpected_http_error_surfaces_auth_debug_headers() {
+        let error_json = STANDARD.encode(r#"{"error":{"code":"deactivated_workspace"}}"#);
+        let response = http_response(
+            "401 Unauthorized",
+            &[
+                ("x-openai-authorization-error", "expired session"),
+                ("x-error-json", &error_json),
+            ],
+            "plain body",
+        );
+        let url = spawn_server(response);
+        let response = fetch_response(&url);
+
+        let err = UnexpectedHttpError::from_ureq_response(response, Some(&url));
+        let rendered = err.to_string();
+        assert!(rendered.contains("auth error: expired session"));
+        assert!(rendered.contains("auth error code: deactivated_workspace"));
+    }
+
+    #[test]
+    fn unexpected_http_error_plain_message_prefers_detail_message() {
+        let err = UnexpectedHttpError {
+            status: 402,
+            status_text: Some("Payment Required".to_string()),
+            body: r#"{"detail":{"message":"Workspace deactivated by owner"}}"#.to_string(),
+            url: None,
+            cf_ray: None,
+            request_id: None,
+            identity_authorization_error: None,
+            identity_error_code: None,
+        };
+
+        assert_eq!(
+            err.plain_message(),
+            "Workspace deactivated by owner\nunexpected status 402 Payment Required"
+        );
+    }
+
+    #[test]
+    fn unexpected_http_error_truncates_long_raw_body() {
+        let body = "x".repeat(1205);
+        let err = UnexpectedHttpError {
+            status: 500,
+            status_text: Some("Internal Server Error".to_string()),
+            body,
+            url: None,
+            cf_ray: None,
+            request_id: None,
+            identity_authorization_error: None,
+            identity_error_code: None,
+        };
+
+        let rendered = err.to_string();
+        assert!(rendered.starts_with("unexpected status 500 Internal Server Error: "));
+        assert!(rendered.ends_with("..."));
+        assert!(rendered.len() < 1100);
+    }
+
+    #[test]
+    fn unexpected_http_error_uses_non_json_body_verbatim() {
+        let response = http_response("502 Bad Gateway", &[], "gateway exploded");
+        let url = spawn_server(response);
+        let response = fetch_response(&url);
+
+        let err = UnexpectedHttpError::from_ureq_response(response, Some(&url));
+        let rendered = err.to_string();
+        assert!(rendered.contains("unexpected status 502 Bad Gateway: gateway exploded"));
     }
 
     #[test]
@@ -601,6 +1072,20 @@ mod tests {
             let err = write_atomic_with_mode(&path, b"data", 0o600).unwrap_err();
             assert!(err.contains("Failed to set temp file permissions"));
         });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_atomic_with_mode_creates_private_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("file.txt");
+
+        write_atomic_with_mode(&path, b"data", 0o600).unwrap();
+
+        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
     }
 
     #[test]
