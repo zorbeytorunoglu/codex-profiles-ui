@@ -432,17 +432,17 @@ fn inspect_current_profile(
     tokens: &BTreeMap<String, Result<crate::Tokens, String>>,
 ) -> Check {
     match auth {
-        AuthState::Missing => Check::new(Level::Info, "current profile", "no auth file"),
+        AuthState::Missing => Check::new(Level::Info, "active profile", "no auth file"),
         AuthState::Incomplete(reason) | AuthState::Invalid(reason) => Check::new(
             Level::Warn,
-            "current profile",
+            "active profile",
             format!("unavailable ({reason})"),
         ),
         AuthState::Valid => match current_saved_id(paths, tokens) {
-            Some(_) => Check::new(Level::Ok, "current profile", "saved"),
+            Some(_) => Check::new(Level::Ok, "active profile", "saved"),
             None => Check::new(
                 Level::Warn,
-                "current profile",
+                "active profile",
                 "not saved (run `codex-profiles save`)",
             ),
         },

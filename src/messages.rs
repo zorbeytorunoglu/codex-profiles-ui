@@ -68,12 +68,12 @@ pub const PROFILE_ERR_LABEL_EXISTS: &str = "Error: Label '{}' already exists. {}
 pub const PROFILE_ERR_LABEL_NOT_FOUND: &str = "Error: Label '{}' was not found. {}";
 pub const PROFILE_ERR_READ_PROFILES_DIR: &str = "Error: Cannot read profiles directory: {}";
 pub const PROFILE_ERR_RENAME_PROFILE: &str = "Error: Failed to rename profile {}: {}";
-pub const PROFILE_ERR_SYNC_CURRENT: &str = "Error: Failed to sync current profile: {}";
+pub const PROFILE_ERR_SYNC_CURRENT: &str = "Error: Failed to sync active profile: {}";
 pub const PROFILE_ERR_COPY_CONTEXT: &str = "Error: Failed to {} {}: {}";
 pub const PROFILE_COPY_CONTEXT_SAVE: &str = "save profile to";
 pub const PROFILE_COPY_CONTEXT_LOAD: &str = "load selected profile to";
-pub const PROFILE_ERR_CURRENT_NOT_SAVED: &str = "Error: Current profile is not saved. {}";
-pub const PROFILE_WARN_CURRENT_NOT_SAVED_REASON: &str = "Current profile is not saved ({})";
+pub const PROFILE_ERR_CURRENT_NOT_SAVED: &str = "Error: Active profile is not saved. {}";
+pub const PROFILE_WARN_CURRENT_NOT_SAVED_REASON: &str = "Active profile is not saved ({})";
 pub const PROFILE_ERR_PROMPT_LOAD: &str = "Error: Could not prompt for load: {}";
 pub const PROFILE_ERR_TTY_REQUIRED: &str =
     "Error: {} selection requires a TTY. Run `{} {}` interactively.";
@@ -94,7 +94,7 @@ pub const PROFILE_SUMMARY_AUTH_ERROR: &str = "Auth error";
 pub const PROFILE_SUMMARY_USAGE_ERROR: &str = "Usage error";
 pub const PROFILE_SUMMARY_FILE_MISSING: &str = "profile file missing";
 
-pub const PROFILE_PROMPT_SAVE_AND_CONTINUE: &str = "Save current profile and continue";
+pub const PROFILE_PROMPT_SAVE_AND_CONTINUE: &str = "Save active profile and continue";
 pub const PROFILE_PROMPT_CONTINUE_WITHOUT_SAVING: &str = "Continue without saving";
 pub const PROFILE_PROMPT_CANCEL: &str = "Cancel";
 pub const PROFILE_PROMPT_DELETE_ONE: &str = "Delete profile {}? This cannot be undone.";

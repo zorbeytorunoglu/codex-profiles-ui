@@ -22,10 +22,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - regular remote error output now uses aligned multiline blocks while JSON output preserves raw backend detail
 - top-level `--help` output now uses a shorter example list and highlights `--json` support as a common option
 - errors always exit non-zero and write to stderr only; stdout is never polluted with partial JSON on error
+- status output marker and related doctor messaging now use "active profile" wording
+- `status --all --json` now returns a single `profiles` array that includes API-key and errored profiles
 
 ### Removed
 
 - `anyhow` dependency; `updates.rs` now uses `Result<T, String>` consistently
+- `status --all --show-errors` flag and hidden-profile summary/count modes
 
 ### Internal
 

@@ -89,11 +89,11 @@ rm ~/.local/bin/codex-profiles
 
 > [!TIP]
 > `load` and `delete` are interactive unless you pass `--label` or `--id`.
-> If the current profile is not saved, `load` also prompts before switching unless you pass `--force`.
+> If the active profile is not saved, `load` also prompts before switching unless you pass `--force`.
 
 | Command | Description |
 | --- | --- |
-| `codex-profiles save [options]` | Save the current `auth.json` as a profile. Use `--label <name>` to label it. |
+| `codex-profiles save [options]` | Save the active `auth.json` as a profile. Use `--label <name>` to label it. |
 | `codex-profiles load [options]` | Load a profile without re-login. Use `--label <name>`, `--id <profile-id>`, and `--force` as needed. |
 | `codex-profiles list [options]` | List saved profiles. Use `--show-id` or `--json` for alternate output. |
 | `codex-profiles export [options]` | Export saved profiles to a single JSON bundle. |
@@ -102,12 +102,12 @@ rm ~/.local/bin/codex-profiles
 | `codex-profiles label set [options]` | Add or replace a label on a saved profile. |
 | `codex-profiles label clear [options]` | Remove a label from a saved profile. |
 | `codex-profiles label rename [options]` | Rename an existing label without using set/clear manually. |
-| `codex-profiles status [options]` | Show usage for the current profile, a selected saved profile (`--label`/`--id`), or all saved profiles with `--all`. Use `--show-errors` to include errored saved profiles and `--json` for structured output. |
+| `codex-profiles status [options]` | Show usage for the active profile, a selected saved profile (`--label`/`--id`), or all saved profiles with `--all`. Use `--json` for structured output. |
 | `codex-profiles delete [options]` | Delete profiles. Use `--label <name>`, repeat `--id <profile-id>`, and `--yes` as needed. |
 
 Label examples: `codex-profiles label set --id <profile-id> --to work`, `codex-profiles label clear --label work`.
 
-`status --json` returns the current profile object (or `null`); `status --label/--id --json` returns the selected saved profile object (or `null` when no saved profiles exist); `status --all --json` returns `profiles` plus hidden-profile counts.
+`status --json` returns the active profile object (or `null`); `status --label/--id --json` returns the selected saved profile object (or `null` when no saved profiles exist); `status --all --json` returns a `profiles` array.
 
 `export --output <file>` exports all saved profiles by default. Use `--label` or repeated `--id` to export a smaller set.
 
@@ -165,7 +165,7 @@ Loaded profile mail@company.com (Team)
 <details>
 <summary>What happens if I run load without saving?</summary>
 
-> You will be prompted to save the current profile, continue without saving, or
+> You will be prompted to save the active profile, continue without saving, or
 > cancel.
 </details>
 

@@ -1007,7 +1007,7 @@ fn ui_doctor_reports_missing_state() {
     assert!(output.contains("[info] profiles directory: missing"));
     assert!(output.contains("[info] profiles index: missing"));
     assert!(output.contains("[info] profiles lock: not created yet"));
-    assert!(output.contains("[info] current profile: no auth file"));
+    assert!(output.contains("[info] active profile: no auth file"));
 }
 
 #[test]
@@ -1017,7 +1017,7 @@ fn ui_doctor_reports_unsaved_current_profile() {
     let output = env.run(&["doctor"]);
     assert!(output.contains("[ok] auth file: valid"));
     assert!(output.contains("[ok] saved profiles: 0 valid, 0 invalid"));
-    assert!(output.contains("[warn] current profile: not saved (run `codex-profiles save`)"));
+    assert!(output.contains("[warn] active profile: not saved (run `codex-profiles save`)"));
 }
 
 #[test]
@@ -1027,7 +1027,7 @@ fn ui_doctor_reports_saved_current_profile() {
     let output = env.run(&["doctor"]);
     assert!(output.contains("[ok] auth file: valid"));
     assert!(output.contains("[ok] saved profiles: 2 valid, 0 invalid"));
-    assert!(output.contains("[ok] current profile: saved"));
+    assert!(output.contains("[ok] active profile: saved"));
 }
 
 #[test]
@@ -1046,7 +1046,7 @@ fn ui_doctor_reports_incomplete_auth() {
     .expect("write partial auth");
     let output = env.run(&["doctor"]);
     assert!(output.contains("[warn] auth file: present but incomplete"));
-    assert!(output.contains("[warn] current profile: unavailable (present but incomplete"));
+    assert!(output.contains("[warn] active profile: unavailable (present but incomplete"));
 }
 
 #[test]
@@ -1078,7 +1078,7 @@ fn ui_doctor_json_missing_state() {
             && check.get("level") == Some(&serde_json::json!("warn"))
     }));
     assert!(checks.iter().any(|check| {
-        check.get("name") == Some(&serde_json::json!("current profile"))
+        check.get("name") == Some(&serde_json::json!("active profile"))
             && check.get("level") == Some(&serde_json::json!("info"))
     }));
     assert!(json.get("repairs").is_none());
@@ -1101,7 +1101,7 @@ fn ui_doctor_json_saved_current_profile() {
             && check.get("detail") == Some(&serde_json::json!("2 valid, 0 invalid"))
     }));
     assert!(checks.iter().any(|check| {
-        check.get("name") == Some(&serde_json::json!("current profile"))
+        check.get("name") == Some(&serde_json::json!("active profile"))
             && check.get("detail") == Some(&serde_json::json!("saved"))
     }));
     assert!(json.get("repairs").is_none());
@@ -1473,7 +1473,7 @@ fn ui_load_unsaved_profile_requires_prompt() {
         "token-current",
     );
     let err = env.run_expect_error(&["load", "--label", "alpha"]);
-    assert!(err.contains("Current profile is not saved"));
+    assert!(err.contains("Active profile is not saved"));
     assert!(err.contains("--force"));
 }
 
@@ -1991,6 +1991,13 @@ fn ui_status_all_command() {
 }
 
 #[test]
+fn ui_status_all_rejects_removed_show_errors_flag() {
+    let env = TestEnv::new();
+    let err = env.run_expect_error(&["status", "--all", "--show-errors"]);
+    assert!(err.contains("unexpected argument '--show-errors'"));
+}
+
+#[test]
 fn ui_status_all_json_command() {
     let env = TestEnv::new();
     seed_profiles(&env);
@@ -2104,10 +2111,27 @@ fn ui_status_all_json_includes_api_profiles() {
         .and_then(|value| value.as_array())
         .expect("profiles array");
     assert_eq!(profiles.len(), 3);
-    assert!(profiles.iter().any(|profile| {
-        profile.get("id") == Some(&serde_json::json!("api-key-hidden"))
-            && profile.get("is_api_key") == Some(&serde_json::json!(true))
-    }));
+    let api_profile = profiles
+        .iter()
+        .find(|profile| profile.get("id") == Some(&serde_json::json!("api-key-hidden")))
+        .expect("api profile");
+    assert_eq!(
+        api_profile.get("is_api_key").unwrap(),
+        &serde_json::json!(true)
+    );
+    let usage = api_profile.get("usage").expect("api usage");
+    assert_eq!(
+        usage.get("state").unwrap(),
+        &serde_json::json!("unavailable")
+    );
+    assert!(
+        usage
+            .get("summary")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .contains("Usage unavailable for API key")
+    );
+    assert!(api_profile.get("error").is_none() || api_profile.get("error").unwrap().is_null());
 
     let _ = usage_handle.join();
 }
@@ -2192,6 +2216,75 @@ fn ui_status_all_json_includes_errored_profiles() {
             .iter()
             .any(|profile| profile.get("error").is_some()
                 && !profile.get("error").unwrap().is_null())
+    );
+
+    let _ = usage_handle.join();
+}
+
+#[test]
+fn ui_status_all_json_402_exposes_structured_usage_error() {
+    let env = TestEnv::new();
+    let profile_id = "mail1@example.com-team";
+    write_profile_tokens(
+        &env,
+        profile_id,
+        serde_json::json!({
+            "account_id": "acct-mail-1",
+            "access_token": "token-mail-1",
+            "refresh_token": "refresh-mail-1"
+        }),
+    );
+    env.write_profiles_index(
+        &[(profile_id, 10)],
+        &[(profile_id, "mail1")],
+        Some(profile_id),
+    );
+    seed_current(&env);
+
+    let usage_402_body = r#"{"detail":{"code":"deactivated_workspace"}}"#;
+    let usage_402_resp = format!(
+        "HTTP/1.1 402 Payment Required\r\nContent-Type: application/json\r\nCF-Ray: ray-402\r\nx-request-id: req-402\r\nContent-Length: {}\r\n\r\n{}",
+        usage_402_body.len(),
+        usage_402_body
+    );
+    let (usage_addr, usage_handle) = start_response_server(vec![usage_402_resp], 4).expect("usage");
+    env.write_config(&format!("http://{usage_addr}/backend-api"));
+
+    let output = env.run(&["status", "--all", "--json"]);
+    let payload: serde_json::Value = serde_json::from_str(&output).expect("parse status all json");
+    let profiles = payload
+        .get("profiles")
+        .and_then(|value| value.as_array())
+        .expect("profiles array");
+    assert!(!profiles.is_empty());
+    let profile = profiles
+        .iter()
+        .find(|item| {
+            item.get("error").and_then(|error| error.get("status_code"))
+                == Some(&serde_json::json!(402))
+        })
+        .expect("profile with 402 status error");
+
+    let error = profile.get("error").expect("error object");
+    let message = error
+        .get("summary")
+        .and_then(|summary| summary.get("message"))
+        .and_then(serde_json::Value::as_str)
+        .expect("error summary message");
+    assert!(message.starts_with("Usage error: unexpected status 402 Payment Required"));
+    assert!(message.contains("/backend-api/wham/usage"));
+    assert_eq!(
+        error
+            .get("summary")
+            .and_then(|summary| summary.get("response"))
+            .unwrap(),
+        &serde_json::json!({"detail": {"code": "deactivated_workspace"}})
+    );
+    assert_eq!(error.get("status_code").unwrap(), &serde_json::json!(402));
+    assert!(error.get("detail").is_none() || error.get("detail") == Some(&serde_json::Value::Null));
+    assert_eq!(
+        profile.get("usage").unwrap(),
+        &serde_json::json!({ "state": "error" })
     );
 
     let _ = usage_handle.join();

@@ -2667,6 +2667,7 @@ fn print_list_json(entries: &[Entry]) -> Result<(), String> {
 }
 
 fn status_error_summary_json(summary: String) -> StatusErrorSummaryJson {
+    let summary = crate::sanitize_for_terminal(&summary);
     let Some((start, end, response)) = extract_embedded_json_object(&summary) else {
         return StatusErrorSummaryJson {
             message: summary,
@@ -2752,12 +2753,16 @@ fn status_profile_json(entry: Entry) -> StatusProfileJson {
         state: usage.state,
         buckets: usage.buckets,
         status_code: usage.status_code,
-        summary: usage.summary.map(|summary| crate::ui::strip_ansi(&summary)),
-        detail: usage.detail.map(|detail| crate::ui::strip_ansi(&detail)),
+        summary: usage
+            .summary
+            .map(|summary| crate::sanitize_for_terminal(&summary)),
+        detail: usage
+            .detail
+            .map(|detail| crate::sanitize_for_terminal(&detail)),
     });
     let mut top_level_summary = entry
         .error_summary
-        .map(|error| crate::ui::strip_ansi(&error));
+        .map(|error| crate::sanitize_for_terminal(&error));
     let mut error = None;
     if let Some(usage_json) = usage.as_mut()
         && usage_json.state == "error"
@@ -2791,7 +2796,7 @@ fn status_profile_json(entry: Entry) -> StatusProfileJson {
         warnings: entry
             .warnings
             .into_iter()
-            .map(|warning| crate::ui::strip_ansi(&warning))
+            .map(|warning| crate::sanitize_for_terminal(&warning))
             .collect(),
         usage,
         error,
