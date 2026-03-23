@@ -78,10 +78,18 @@ fn run(cli: Cli) -> Result<(), String> {
         Commands::Import { input } => import_profiles(&paths, input, json),
         Commands::Doctor { fix } => doctor(&paths, fix, json),
         Commands::Label { command } => match command {
-            crate::cli::LabelCommands::Set { label, id, to } => {
+            crate::cli::LabelCommands::Set { selector, to } => {
+                let (label, id) = require_saved_profile_selector(
+                    selector,
+                    crate::cli::label_set_usage(command_name()),
+                )?;
                 set_profile_label(&paths, label, id, to, json)
             }
-            crate::cli::LabelCommands::Clear { label, id } => {
+            crate::cli::LabelCommands::Clear { selector } => {
+                let (label, id) = require_saved_profile_selector(
+                    selector,
+                    crate::cli::label_clear_usage(command_name()),
+                )?;
                 clear_profile_label(&paths, label, id, json)
             }
             crate::cli::LabelCommands::Rename { label, to } => {
@@ -91,6 +99,18 @@ fn run(cli: Cli) -> Result<(), String> {
         Commands::Status { all, label, id } => status_profiles(&paths, all, label, id, json),
         Commands::Delete { yes, label, id } => delete_profile(&paths, yes, label, id, json),
     }
+}
+
+fn require_saved_profile_selector(
+    selector: crate::cli::SavedProfileSelector,
+    usage: String,
+) -> Result<(Option<String>, Option<String>), String> {
+    if selector.label.is_none() && selector.id.is_none() {
+        return Err(format!(
+            "error: exactly one of `--label <label>` or `--id <profile-id>` is required.\n\nUsage: {usage}\n\nFor more information, try '--help'."
+        ));
+    }
+    Ok((selector.label, selector.id))
 }
 
 fn run_update_action(action: UpdateAction) -> Result<(), String> {

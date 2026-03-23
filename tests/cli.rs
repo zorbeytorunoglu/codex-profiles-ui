@@ -7,6 +7,7 @@ use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -24,6 +25,8 @@ const FREE_ACCOUNT: &str = "acct-free";
 const FREE_EMAIL: &str = "free@example.com";
 const FREE_PLAN: &str = "free";
 const FREE_TOKEN: &str = "token-free";
+
+static COMMAND_MUTEX: Mutex<()> = Mutex::new(());
 
 struct TestEnv {
     home: tempfile::TempDir,
@@ -186,6 +189,7 @@ impl TestEnv {
     }
 
     fn run_output_with_env(&self, args: &[&str], extra_env: &[(&str, &str)]) -> Output {
+        let _guard = COMMAND_MUTEX.lock().expect("command mutex");
         let mut cmd = Command::new(&self.bin_path);
         cmd.args(args)
             .env("HOME", self.home_path())
@@ -283,7 +287,10 @@ fn read_json_file(path: &PathBuf) -> serde_json::Value {
 
 fn resolve_bin_path() -> PathBuf {
     if let Ok(path) = env::var("CARGO_BIN_EXE_codex-profiles") {
-        return PathBuf::from(path);
+        let path = PathBuf::from(path);
+        if path.exists() {
+            return path;
+        }
     }
     let exe = env::current_exe().expect("current exe");
     let target_dir = exe
@@ -356,12 +363,13 @@ fn start_response_server(
                     }
                 }
                 Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
-                    // Give slower CI hosts time to make the first request, but
-                    // shut down quickly after serving at least one request.
+                    // Give parallel tests enough time to acquire the command
+                    // mutex and issue their first request on slower CI hosts.
+                    // Keep post-request timeout shorter to avoid hangs.
                     let idle_timeout = if handled == 0 {
-                        Duration::from_secs(10)
+                        Duration::from_secs(60)
                     } else {
-                        Duration::from_secs(2)
+                        Duration::from_secs(10)
                     };
                     if last_activity.elapsed() > idle_timeout {
                         break;
@@ -1678,11 +1686,58 @@ fn ui_list_json_empty_profiles() {
 }
 
 #[test]
-fn ui_list_rejects_json_with_show_id() {
+fn ui_list_json_accepts_show_id_without_changing_output() {
     let env = TestEnv::new();
-    let err = env.run_expect_error(&["list", "--json", "--show-id"]);
-    assert!(err.contains("--json"));
-    assert!(err.contains("--show-id"));
+    seed_profiles(&env);
+
+    let plain_json = env.run(&["list", "--json"]);
+    let show_id_json = env.run(&["list", "--json", "--show-id"]);
+
+    let plain: serde_json::Value =
+        serde_json::from_str(&plain_json).expect("parse plain list json");
+    let with_show_id: serde_json::Value =
+        serde_json::from_str(&show_id_json).expect("parse show-id list json");
+
+    assert_eq!(with_show_id, plain);
+}
+
+#[test]
+fn ui_label_set_help_shows_exactly_one_selector() {
+    let env = TestEnv::new();
+    let output = env.run_output(&["label", "set", "--help"]);
+    assert!(output.status.success());
+    let help = String::from_utf8_lossy(&output.stdout);
+
+    assert!(
+        help.contains(
+            "Usage: codex-profiles label set [OPTIONS] --to <label> (--label <label> | --id <profile-id>)"
+        )
+    );
+    assert!(help.contains("--label <label>"));
+    assert!(help.contains("--id <profile-id>"));
+    assert!(help.contains("--to <label>"));
+}
+
+#[test]
+fn ui_label_set_missing_selector_has_clear_error() {
+    let env = TestEnv::new();
+    let err = env.run_expect_error(&["label", "set", "--to", "work"]);
+
+    assert!(err.contains("exactly one of `--label <label>` or `--id <profile-id>` is required"));
+    assert!(err.contains(
+        "Usage: codex-profiles label set [OPTIONS] --to <label> (--label <label> | --id <profile-id>)"
+    ));
+}
+
+#[test]
+fn ui_label_clear_missing_selector_has_clear_error() {
+    let env = TestEnv::new();
+    let err = env.run_expect_error(&["label", "clear"]);
+
+    assert!(err.contains("exactly one of `--label <label>` or `--id <profile-id>` is required"));
+    assert!(err.contains(
+        "Usage: codex-profiles label clear [OPTIONS] (--label <label> | --id <profile-id>)"
+    ));
 }
 
 #[test]

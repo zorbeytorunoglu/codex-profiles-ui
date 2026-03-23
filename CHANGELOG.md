@@ -7,35 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0]
+
 ### Added
 
-- `--json` output for mutating commands: `save`, `load`, `delete`, `label set`, `label clear`, `label rename`, `export`, and `import`
-- `doctor --json` and `doctor --fix` for scriptable diagnostics and repair
+- `doctor` command with `--fix` and `--json` for scriptable diagnostics and safe storage repairs
 - profile label management commands: `label set`, `label clear`, and `label rename`
-- `status` selectors and JSON modes: `--id`, `--label`, and `--json`
-- `load --force`, `export`, `import`, exact `--id` selectors for `load` / `delete`, and `list --json` / `--show-id`
+- profile export and import commands for backup and transfer bundles
+- exact `--id` selectors for `load`, `delete`, and `status`, plus saved-profile `status` selectors with `--label` and `--id`
+- `load --force`, `list --json`, `list --show-id`, and machine-readable `--json` output for mutating commands, `status`, and `doctor`
 
 ### Changed
 
-- mutating commands now emit a uniform JSON response shape when `--json` is passed
-- `status` now refreshes tokens on usage `401` responses, syncs refreshed credentials back to the saved profile when the current profile is saved, and formats auth/usage HTTP errors in Codex-CLI style
+- `--json` is now a global CLI option, and mutating commands emit a consistent success response shape
+- `status` now refreshes usage auth on `401` responses, syncs refreshed credentials back to the saved active profile when possible, and formats auth/usage HTTP errors in a Codex-style layout
+- `status --all --json` now returns a single `profiles` array that includes API-key and errored profiles, and human-readable output now uses "active profile" wording
+- top-level `--help` output now uses shorter examples, highlights `--json` support more clearly, and label subcommands now spell out the required `--label`/`--id` selector more clearly
+- the manual installer now resolves the latest published GitHub release automatically when no version is pinned, while still honoring `CODEX_PROFILES_VERSION` and `--version`
+- Cargo installs now require Rust 1.94 or newer
+- package and README metadata now describe the tool in terms of switching between multiple Codex accounts
+- status usage lookups now only allow official ChatGPT hosts or loopback addresses for `chatgpt_base_url`, and non-file Codex auth store modes are rejected
+
+### Fixed
+
+- usage fetching now retries transient transport, `5xx`, and rate-limit failures more robustly and supports grouped multi-bucket usage limits
+- installer and release downloads now verify checksums from the tagged GitHub release by default, with a guarded insecure bypass for environments that explicitly set `CODEX_PROFILES_ALLOW_INSECURE_INSTALL=1`
+- npm and Bun update-source detection is more reliable
 - regular remote error output now uses aligned multiline blocks while JSON output preserves raw backend detail
-- top-level `--help` output now uses a shorter example list and highlights `--json` support as a common option
 - errors always exit non-zero and write to stderr only; stdout is never polluted with partial JSON on error
-- status output marker and related doctor messaging now use "active profile" wording
-- `status --all --json` now returns a single `profiles` array that includes API-key and errored profiles
 
 ### Removed
 
-- `anyhow` dependency; `updates.rs` now uses `Result<T, String>` consistently
 - `status --all --show-errors` flag and hidden-profile summary/count modes
 
 ### Internal
 
+- `anyhow` dependency was removed; `updates.rs` now uses `Result<T, String>` consistently
 - auth refresh now refuses to rewrite drifted on-disk auth state
-- remote output sanitization and legacy-schema detection were hardened
-- `updates.rs` error handling is now consistently `Result<T, String>` / `.map_err(|e| e.to_string())`
-- integration and regression coverage expanded for mutating JSON output, remote error formatting, and status/profile edge cases
+- release packaging now emits a release manifest, verifies generated artifacts more strictly, and publishes npm packages with provenance plus GitHub attestations
+- release and CI workflows were hardened, pinned more explicitly, and now include a scheduled security-audit workflow
+- integration and regression coverage expanded for JSON output, release artifacts, status/profile edge cases, and profile storage repair paths
+
+### Documentation
+
+- README now documents export/import, label workflows, doctor repair behavior, and release verification more thoroughly
+- added a release verification guide covering `SHA256SUMS`, `release-manifest.json`, GitHub attestations, npm provenance, and `.crate` verification
 
 ## [0.2.0] - 2026-02-21
 
@@ -111,6 +127,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Pre-commit hooks for code quality
 - Binary releases for 5 platforms (Linux x64/ARM64, macOS Intel/Apple Silicon, Windows x64)
 
-[Unreleased]: https://github.com/midhunmonachan/codex-profiles/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/midhunmonachan/codex-profiles/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/midhunmonachan/codex-profiles/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/midhunmonachan/codex-profiles/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/midhunmonachan/codex-profiles/releases/tag/v0.1.0

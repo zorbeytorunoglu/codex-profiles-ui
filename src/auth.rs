@@ -429,6 +429,10 @@ struct RefreshResponse {
 pub fn refresh_profile_tokens(path: &Path, tokens: &mut Tokens) -> Result<(), String> {
     let disk_tokens = read_tokens(path)?;
     if !same_refresh_state(&disk_tokens, tokens) {
+        if same_profile_refresh_target(&disk_tokens, tokens) {
+            *tokens = disk_tokens;
+            return Ok(());
+        }
         return Err(AUTH_ERR_REFRESH_STATE_CHANGED.to_string());
     }
 
@@ -448,6 +452,20 @@ fn same_refresh_state(left: &Tokens, right: &Tokens) -> bool {
         && left.id_token == right.id_token
         && left.access_token == right.access_token
         && left.refresh_token == right.refresh_token
+}
+
+fn same_profile_refresh_target(left: &Tokens, right: &Tokens) -> bool {
+    if left.account_id != right.account_id {
+        return false;
+    }
+
+    match (
+        extract_profile_identity(left),
+        extract_profile_identity(right),
+    ) {
+        (Some(left), Some(right)) => left == right,
+        _ => false,
+    }
 }
 
 fn read_auth_store_mode_for_path(path: &Path) -> Result<AuthStoreMode, String> {
@@ -971,6 +989,71 @@ mod tests {
         assert!(stored.contains("other-account"));
         assert!(stored.contains("disk-access"));
         assert!(stored.contains("disk-refresh"));
+    }
+
+    #[test]
+    fn refresh_profile_tokens_reuses_rotated_disk_tokens_for_same_profile() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("auth.json");
+        let initial = serde_json::json!({
+            "tokens": {
+                "account_id": "acct",
+                "access_token": "old-access",
+                "refresh_token": "old-refresh",
+                "id_token": build_id_token_payload(
+                    "{\"sub\":\"user-1\",\"email\":\"same@example.com\",\"organization_id\":\"org-1\",\"https://api.openai.com/auth\":{\"chatgpt_plan_type\":\"pro\",\"chatgpt_account_id\":\"acct\"}}"
+                )
+            }
+        });
+        fs::write(&path, serde_json::to_string(&initial).unwrap()).unwrap();
+        let mut tokens = read_tokens(&path).unwrap();
+
+        let rotated = serde_json::json!({
+            "tokens": {
+                "account_id": "acct",
+                "access_token": "new-access",
+                "refresh_token": "new-refresh",
+                "id_token": build_id_token_payload(
+                    "{\"sub\":\"user-1\",\"email\":\"same@example.com\",\"organization_id\":\"org-1\",\"https://api.openai.com/auth\":{\"chatgpt_plan_type\":\"pro\",\"chatgpt_account_id\":\"acct\"}}"
+                )
+            }
+        });
+        fs::write(&path, serde_json::to_string(&rotated).unwrap()).unwrap();
+
+        refresh_profile_tokens(&path, &mut tokens).unwrap();
+        assert_eq!(tokens.account_id.as_deref(), Some("acct"));
+        assert_eq!(tokens.access_token.as_deref(), Some("new-access"));
+        assert_eq!(tokens.refresh_token.as_deref(), Some("new-refresh"));
+    }
+
+    #[test]
+    fn refresh_profile_tokens_rejects_rotated_disk_tokens_when_identity_is_missing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("auth.json");
+        let initial = serde_json::json!({
+            "tokens": {
+                "account_id": "   ",
+                "access_token": "old-access",
+                "refresh_token": "old-refresh"
+            }
+        });
+        fs::write(&path, serde_json::to_string(&initial).unwrap()).unwrap();
+        let mut tokens = read_tokens(&path).unwrap();
+
+        let rotated = serde_json::json!({
+            "tokens": {
+                "account_id": "   ",
+                "access_token": "new-access",
+                "refresh_token": "new-refresh"
+            }
+        });
+        fs::write(&path, serde_json::to_string(&rotated).unwrap()).unwrap();
+
+        let err = refresh_profile_tokens(&path, &mut tokens).unwrap_err();
+        assert!(err.contains("changed on disk"));
+        assert_eq!(tokens.account_id.as_deref(), Some("   "));
+        assert_eq!(tokens.access_token.as_deref(), Some("old-access"));
+        assert_eq!(tokens.refresh_token.as_deref(), Some("old-refresh"));
     }
 
     #[test]

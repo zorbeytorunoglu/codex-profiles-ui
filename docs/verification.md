@@ -13,12 +13,15 @@ Download the release asset you want to inspect together with `SHA256SUMS` and
 `release-manifest.json`:
 
 ```bash
-gh release download v0.2.0 \
+TAG="vX.Y.Z"
+gh release download "$TAG" \
   --repo midhunmonachan/codex-profiles \
   --pattern 'SHA256SUMS' \
   --pattern 'release-manifest.json' \
   --pattern 'codex-profiles-x86_64-unknown-linux-gnu.tar.gz'
 ```
+
+Replace `vX.Y.Z` with the release tag you want to verify.
 
 Then verify the checksums:
 

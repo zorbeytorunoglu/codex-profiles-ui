@@ -5,6 +5,11 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to publish or recover (for example, v0.3.0)
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -16,17 +21,50 @@ concurrency:
 jobs:
   tag-check:
     runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      version: ${{ steps.release.outputs.version }}
+      prerelease: ${{ steps.release.outputs.prerelease }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-      - name: Validate tag matches versions
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - id: release
+        name: Resolve release tag
         shell: bash
         run: |
           set -euo pipefail
-          [[ "${GITHUB_REF_TYPE}" == "tag" ]] || { echo "Not a tag push"; exit 1; }
-          [[ "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta)(\.[0-9]+)?)?$ ]] \
-            || { echo "Tag '${GITHUB_REF_NAME}' does not match vX.Y.Z or vX.Y.Z-alpha.N"; exit 1; }
 
-          tag_ver="${GITHUB_REF_NAME#v}"
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            tag="${GITHUB_REF_NAME}"
+          else
+            tag="${{ inputs.tag }}"
+          fi
+
+          [[ -n "${tag}" ]] || { echo "Missing release tag"; exit 1; }
+          [[ "${tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta)(\.[0-9]+)?)?$ ]] \
+            || { echo "Tag '${tag}' does not match vX.Y.Z or vX.Y.Z-alpha.N"; exit 1; }
+
+          checked_out_tag="$(git describe --tags --exact-match HEAD 2>/dev/null || true)"
+          [[ "${checked_out_tag}" == "${tag}" ]] \
+            || { echo "Checked out ref does not match tag ${tag}"; exit 1; }
+
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+          if [[ "${tag}" == *-* ]]; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Validate tag matches versions
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+
           cargo_ver="$(grep -m1 '^version' Cargo.toml | sed -E 's/version *= *\"([^\"]+)\".*/\1/')"
           npm_ver="$(python3 - <<'PY'
           import json
@@ -35,12 +73,13 @@ jobs:
           PY
           )"
 
-          echo "Tag version: ${tag_ver}"
+          echo "Tag: ${RELEASE_TAG}"
+          echo "Tag version: ${RELEASE_VERSION}"
           echo "Cargo version: ${cargo_ver}"
           echo "NPM version: ${npm_ver}"
 
-          [[ "${tag_ver}" == "${cargo_ver}" ]] || { echo "Tag ${tag_ver} != Cargo.toml ${cargo_ver}"; exit 1; }
-          [[ "${tag_ver}" == "${npm_ver}" ]] || { echo "Tag ${tag_ver} != package.json ${npm_ver}"; exit 1; }
+          [[ "${RELEASE_VERSION}" == "${cargo_ver}" ]] || { echo "Tag ${RELEASE_VERSION} != Cargo.toml ${cargo_ver}"; exit 1; }
+          [[ "${RELEASE_VERSION}" == "${npm_ver}" ]] || { echo "Tag ${RELEASE_VERSION} != package.json ${npm_ver}"; exit 1; }
 
   verify:
     needs: tag-check
@@ -49,6 +88,8 @@ jobs:
       CARGO_INCREMENTAL: "0"
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: ${{ needs.tag-check.outputs.tag }}
       - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7
         with:
           toolchain: 1.94.0
@@ -75,7 +116,7 @@ jobs:
         run: scripts/check.sh
 
   build:
-    needs: verify
+    needs: [tag-check, verify]
     name: build-${{ matrix.target }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
@@ -101,6 +142,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: ${{ needs.tag-check.outputs.tag }}
       - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7
         with:
           toolchain: 1.94.0
@@ -133,7 +176,7 @@ jobs:
           if-no-files-found: error
 
   package:
-    needs: [build, verify]
+    needs: [tag-check, build, verify]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -141,6 +184,8 @@ jobs:
       attestations: write
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: ${{ needs.tag-check.outputs.tag }}
       - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7
         with:
           toolchain: 1.94.0
@@ -164,7 +209,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          version="${GITHUB_REF_NAME#v}"
+          version="${{ needs.tag-check.outputs.version }}"
           scripts/release-artifacts.sh "${version}" dist/artifacts dist
           scripts/verify-artifacts.sh "${version}" dist
 
@@ -188,8 +233,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          version="${GITHUB_REF_NAME#v}"
-          
+          version="${{ needs.tag-check.outputs.version }}"
+
           # Safety gate: only commit to production repository
           if [[ "${GITHUB_REPOSITORY}" != "midhunmonachan/codex-profiles" ]]; then
             echo "Skipping checksum commit: not production repository (current: ${GITHUB_REPOSITORY})"
@@ -197,54 +242,65 @@ jobs:
             ls -la dist/checksums/
             exit 0
           fi
-          
+
           echo "Committing checksums to ${GITHUB_REPOSITORY}..."
-          
+
           # Copy checksums to repo
           cp dist/checksums/SHA256SUMS "checksums/v${version}.txt"
-          
+
           # Configure git
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          
+
           # Fetch and checkout main branch (workflow starts in detached HEAD from tag)
           git fetch origin main
           git checkout main
-          
+
           # Commit and push
           git add "checksums/v${version}.txt"
+          if git diff --cached --quiet; then
+            echo "Checksum file already committed; nothing to do"
+            exit 0
+          fi
           git commit -m "chore: add checksums for v${version}"
           git push origin main
 
       - name: Restore tagged source for crates.io publish
-        if: ${{ !contains(github.ref_name, '-') }}
+        if: ${{ needs.tag-check.outputs.prerelease != 'true' }}
         shell: bash
         run: |
           set -euo pipefail
           git checkout --detach "${RELEASE_SHA}"
 
       - name: Publish to crates.io
-        if: ${{ !contains(github.ref_name, '-') }}
+        if: ${{ needs.tag-check.outputs.prerelease != 'true' }}
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
+          set -euo pipefail
           # Safety gate: only publish from production repository
           if [[ "${GITHUB_REPOSITORY}" != "midhunmonachan/codex-profiles" ]]; then
             echo "Skipping crates.io publish: not production repository (current: ${GITHUB_REPOSITORY})"
             exit 0
           fi
-          
+
           if [ -z "${CARGO_REGISTRY_TOKEN}" ]; then
             echo "Warning: CARGO_REGISTRY_TOKEN not set, skipping crates.io publish"
             echo "Add your token at: https://github.com/${{ github.repository }}/settings/secrets/actions"
             exit 0
           fi
-          
+
+          version="${{ needs.tag-check.outputs.version }}"
+          if curl -fsS "https://crates.io/api/v1/crates/codex-profiles/${version}" >/dev/null 2>&1; then
+            echo "codex-profiles ${version} is already published to crates.io; skipping"
+            exit 0
+          fi
+
           echo "Publishing to crates.io from ${GITHUB_REPOSITORY}..."
           cargo publish --locked --token "${CARGO_REGISTRY_TOKEN}"
 
       - name: Publish to npm
-        if: ${{ !contains(github.ref_name, '-') }}
+        if: ${{ needs.tag-check.outputs.prerelease != 'true' }}
         run: |
           set -euo pipefail
           # Safety gate: only publish from production repository
@@ -267,19 +323,37 @@ jobs:
                   f"npm {sys.argv[1]} is too old for trusted publishing; need >= 11.5.1"
               )
           PY
-          version="${GITHUB_REF_NAME#v}"
+          version="${{ needs.tag-check.outputs.version }}"
 
-          # Publish platform packages
-          for pkg in dist/npm-packages/codex-profiles-*-*.tgz; do
+          package_name() {
+            tar -xOzf "$1" package/package.json \
+              | python3 -c 'import json, sys; print(json.load(sys.stdin)["name"])'
+          }
+
+          publish_if_missing() {
+            local pkg="$1"
+            local name
+            name="$(package_name "$pkg")"
+
+            if npm view "${name}@${version}" version >/dev/null 2>&1; then
+              echo "Skipping npm publish for ${name}@${version}: already published"
+              return 0
+            fi
+
             npm publish "$pkg" --access public --provenance
+          }
+
+          # Publish platform packages first so optionalDependencies can resolve.
+          for pkg in dist/npm-packages/codex-profiles-*-*.tgz; do
+            publish_if_missing "$pkg"
           done
 
-          # Publish main package after platform packages are available
-          npm publish "dist/npm-packages/codex-profiles-${version}.tgz" --access public --provenance
+          publish_if_missing "dist/npm-packages/codex-profiles-${version}.tgz"
 
-      - name: Create GitHub release
+      - name: Create or update GitHub release
         uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b # v2
         with:
+          tag_name: ${{ needs.tag-check.outputs.tag }}
           files: |
             dist/release/*
             dist/npm-packages/*.tgz
@@ -287,4 +361,4 @@ jobs:
             dist/cargo/*.crate
             dist/checksums/*
           generate_release_notes: true
-          prerelease: ${{ contains(github.ref_name, '-') }}
+          prerelease: ${{ needs.tag-check.outputs.prerelease == 'true' }}

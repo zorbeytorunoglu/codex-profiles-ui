@@ -254,7 +254,29 @@ fn parsed_url_scheme_and_host(base_url: &str) -> Option<(String, String)> {
 }
 
 fn is_loopback_host(host: &str) -> bool {
-    matches!(host, "localhost" | "127.0.0.1" | "::1")
+    host == "localhost"
+        || host
+            .parse::<std::net::IpAddr>()
+            .ok()
+            .is_some_and(|ip| ip.is_loopback())
+        || is_ipv4_loopback_shorthand(host)
+}
+
+fn is_ipv4_loopback_shorthand(host: &str) -> bool {
+    let mut parts = host.split('.');
+    if parts.next() != Some("127") {
+        return false;
+    }
+
+    let mut count = 1usize;
+    for part in parts {
+        if part.is_empty() || part.parse::<u8>().is_err() {
+            return false;
+        }
+        count += 1;
+    }
+
+    count >= 2
 }
 
 fn usage_endpoint(base_url: &str) -> String {
@@ -923,6 +945,8 @@ mod tests {
         fs::create_dir_all(&paths.codex).unwrap();
         for value in [
             "http://127.0.0.1:8765",
+            "http://127.0.0.2:8765",
+            "http://127.1:8765",
             "http://localhost:8765",
             "http://[::1]:8765",
         ] {
@@ -935,6 +959,27 @@ mod tests {
             let base_url = read_base_url(&paths).unwrap();
 
             assert_eq!(base_url, value);
+        }
+    }
+
+    #[test]
+    fn read_base_url_rejects_invalid_loopback_shorthand_hosts() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = make_paths(dir.path());
+        fs::create_dir_all(&paths.codex).unwrap();
+        for value in [
+            "http://127..1:8765",
+            "http://127.a:8765",
+            "http://127.256:8765",
+        ] {
+            fs::write(
+                paths.codex.join("config.toml"),
+                format!("chatgpt_base_url = \"{value}\"\n"),
+            )
+            .unwrap();
+
+            let err = read_base_url(&paths).unwrap_err();
+            assert!(err.contains("Unsupported chatgpt_base_url"));
         }
     }
 

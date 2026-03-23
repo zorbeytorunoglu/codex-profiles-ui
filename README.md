@@ -121,7 +121,7 @@ codex-profiles load --label work --force
       <td>Clear a label<br/>Target one profile</td>
     </tr>
     <tr>
-      <td width="43%"><code>codex-profiles label rename</code><br/><code>--from &lt;label&gt; --to &lt;label&gt;</code></td>
+      <td width="43%"><code>codex-profiles label rename</code><br/><code>--label &lt;label&gt; --to &lt;label&gt;</code></td>
       <td>Rename an existing label</td>
     </tr>
     <tr>

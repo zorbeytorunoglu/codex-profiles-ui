@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-VERSION="${CODEX_PROFILES_VERSION:-0.2.0}"
+VERSION="${CODEX_PROFILES_VERSION:-}"
 REPO="midhunmonachan/codex-profiles"
 INSTALL_DIR="${CODEX_PROFILES_INSTALL_DIR:-$HOME/.local/bin}"
 
@@ -34,6 +34,72 @@ error() {
 need_cmd() {
     if ! command -v "$1" > /dev/null 2>&1; then
         error "need '$1' (command not found)"
+    fi
+}
+
+normalize_version() {
+    printf '%s' "${1#v}"
+}
+
+is_valid_version() {
+    [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.]+)?$ ]]
+}
+
+fetch_text() {
+    local url="$1"
+
+    if command -v curl > /dev/null 2>&1; then
+        curl -fsSL --proto '=https' --tlsv1.2 "$url" || return 1
+    elif command -v wget > /dev/null 2>&1; then
+        wget -qO- --https-only --secure-protocol=TLSv1_2 "$url" || return 1
+    else
+        return 1
+    fi
+}
+
+extract_json_string() {
+    local key="$1"
+    local payload="$2"
+
+    printf '%s' "$payload" \
+        | tr -d '\r\n' \
+        | sed -n "s/.*\"${key}\"[[:space:]]*:[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p" \
+        | head -n 1
+}
+
+fetch_latest_version_from_github() {
+    local payload version
+
+    payload="$(fetch_text "https://api.github.com/repos/${REPO}/releases/latest")" || return 1
+    version="$(extract_json_string "tag_name" "$payload")"
+    version="$(normalize_version "$version")"
+    is_valid_version "$version" || return 1
+    printf '%s' "$version"
+}
+
+resolve_version() {
+    local latest
+
+    if [ -n "${VERSION:-}" ]; then
+        VERSION="$(normalize_version "$VERSION")"
+        is_valid_version "$VERSION" || error "invalid version '${VERSION}'"
+        return
+    fi
+
+    info "Resolving latest released version"
+
+    latest="$(fetch_latest_version_from_github)" \
+        || error "could not resolve the latest published GitHub release automatically.\nSet CODEX_PROFILES_VERSION or pass --version to install a specific release."
+
+    VERSION="$latest"
+    info "Resolved version from GitHub releases: v${VERSION}"
+}
+
+version_help_text() {
+    if [ -n "${VERSION:-}" ]; then
+        printf 'v%s' "$VERSION"
+    else
+        printf 'latest release'
     fi
 }
 
@@ -99,7 +165,7 @@ verify_checksum() {
     
     expected="$(
         awk -v name="$basename" '
-            $2 ~ ("(^|/)release/" name "$") { print $1; exit }
+            $2 == name || $2 ~ ("(^|/)release/" name "$") { print $1; exit }
         ' "$checksum_file"
     )"
     if [ -z "$expected" ]; then
@@ -137,6 +203,7 @@ main() {
     need_cmd uname
     need_cmd mkdir
     need_cmd chmod
+    resolve_version
     
     info "Installing codex-profiles v$VERSION"
     
@@ -250,12 +317,12 @@ Usage: $0 [OPTIONS]
 Install codex-profiles by downloading the correct binary for your platform.
 
 Options:
-  -v, --version VERSION    Install specific version (default: $VERSION)
+  -v, --version VERSION    Install specific version (default: $(version_help_text))
   -d, --dir DIR            Install to directory (default: $INSTALL_DIR)
   -h, --help               Show this help message
 
 Environment variables:
-  CODEX_PROFILES_VERSION          Override default version
+  CODEX_PROFILES_VERSION          Override auto-detected release version
   CODEX_PROFILES_INSTALL_DIR      Override default install directory
   CODEX_PROFILES_ALLOW_INSECURE_INSTALL  Set to 1 to bypass checksum requirement
   NO_COLOR                        Disable colored output
@@ -265,8 +332,8 @@ Security:
   the downloaded binary before installation.
 
 Examples:
-  $0                              # Install latest (default: v$VERSION)
-  $0 --version 0.2.0             # Install specific version
+  $0                              # Install the latest published release
+  $0 --version 1.2.3             # Install a specific version
   $0 --dir /usr/local/bin        # Install to custom directory
 
 EOF

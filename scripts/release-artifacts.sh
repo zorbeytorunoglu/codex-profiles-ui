@@ -118,7 +118,7 @@ cask "codex-profiles" do
   end
 
   name "Codex Profiles"
-  desc "Manage multiple Codex CLI auth profiles"
+  desc "Seamlessly switch between multiple Codex accounts"
   homepage "https://github.com/midhunmonachan/codex-profiles"
 
   binary "codex-profiles"
@@ -147,8 +147,8 @@ files=(
   "${homebrew_dir}"/*.rb
 )
 for file in "${files[@]}"; do
-  rel_path="${file#"${out_dir}"/}"
-  printf "%s  %s\n" "$(sha256_file "${file}")" "${rel_path}" >> "${checksums_file}"
+  file_name="$(basename "${file}")"
+  printf "%s  %s\n" "$(sha256_file "${file}")" "${file_name}" >> "${checksums_file}"
 done
 shopt -u nullglob
 
@@ -202,11 +202,19 @@ with open(checksums_path, "r", encoding="utf-8") as fh:
         if not line:
             continue
         sha256, path = line.split("  ", 1)
+        if path.endswith(".crate"):
+            category = "cargo"
+        elif path.endswith(".rb"):
+            category = "homebrew"
+        elif path.endswith(".tgz"):
+            category = "npm-packages"
+        else:
+            category = "release"
         artifacts.append(
             {
                 "path": path,
                 "sha256": sha256,
-                "category": path.split("/", 1)[0],
+                "category": category,
             }
         )
 

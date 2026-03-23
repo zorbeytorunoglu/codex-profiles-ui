@@ -86,7 +86,7 @@ for artifact_dir in "${artifact_dirs[@]}"; do
   "os": ["${os}"],
   "cpu": ["${cpu}"],
   "files": ["bin"],
-  "description": "Platform binary for codex-profiles",
+  "description": "Prebuilt native binary for Codex Profiles",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/midhunmonachan/codex-profiles.git"

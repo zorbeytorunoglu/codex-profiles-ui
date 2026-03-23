@@ -89,7 +89,7 @@ before each commit and push.
 ## Code Standards
 
 - **Rust edition 2024** - follow existing patterns
-- **100% test coverage** - maintained via `make coverage`
+- **90% minimum line coverage** - enforced via `make coverage`
 - **No type suppression** - avoid `as any`, `#[allow]` without justification
 - **Error handling** - proper `Result` types, no silent failures
 - **Security-first** - especially around token/auth handling
@@ -108,8 +108,9 @@ To bump and tag in one step:
 make release-tag ARGS="--bump patch"
 ```
 
-`--bump` also syncs npm `optionalDependencies` package versions and the default
-`VERSION` in `install.sh` so binary and installer release metadata stay aligned.
+`--bump` also syncs npm `optionalDependencies` package versions. `install.sh`
+resolves the latest published release automatically, and you can still pin a
+specific version with `CODEX_PROFILES_VERSION` or `--version`.
 
 ## Questions?
 

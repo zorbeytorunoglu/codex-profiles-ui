@@ -3,13 +3,19 @@ set -euo pipefail
 
 tag_re='^v[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta)(\.[0-9]+)?)?$'
 
+ensure_clean_worktree() {
+  if [[ -n "$(git status --porcelain=v1 --untracked-files=normal)" ]]; then
+    echo "Working tree has uncommitted or untracked changes" >&2
+    exit 1
+  fi
+}
+
 usage() {
   cat <<'EOF'
 Usage: scripts/release-tag [--bump patch|minor|major]
 
-If --bump is provided, the script updates Cargo.toml, package.json
-(version + optionalDependencies), and install.sh (VERSION default), commits
-the version bump, and creates the tag.
+If --bump is provided, the script updates Cargo.toml and package.json
+(version + optionalDependencies), commits the version bump, and creates the tag.
 EOF
 }
 
@@ -58,10 +64,7 @@ if [[ -n "$bump" ]]; then
     echo "Cannot bump prerelease version (${cargo_ver}) automatically" >&2
     exit 1
   fi
-  if ! git diff --quiet || ! git diff --cached --quiet; then
-    echo "Working tree has uncommitted changes" >&2
-    exit 1
-  fi
+  ensure_clean_worktree
 
   IFS='.' read -r major minor patch <<<"$cargo_ver"
   case "$bump" in
@@ -109,28 +112,7 @@ if "optionalDependencies" in data:
     }
 path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 PY
-  python3 - "${new_ver}" <<'PY'
-import re
-import sys
-from pathlib import Path
-
-new_ver = sys.argv[1]
-path = Path("install.sh")
-text = path.read_text(encoding="utf-8")
-replacement = f'VERSION="${{CODEX_PROFILES_VERSION:-{new_ver}}}"'
-text, count = re.subn(
-    r'^VERSION="\$\{CODEX_PROFILES_VERSION:-[^}]+\}"$',
-    replacement,
-    text,
-    count=1,
-    flags=re.M,
-)
-if count != 1:
-    raise SystemExit("Failed to update VERSION default in install.sh")
-path.write_text(text, encoding="utf-8")
-PY
-
-  git add Cargo.toml package.json install.sh
+  git add Cargo.toml package.json
   git commit -m "chore: bump version to v${new_ver}"
 
   cargo_ver="${new_ver}"
@@ -143,10 +125,7 @@ if [[ ! "$tag" =~ $tag_re ]]; then
   exit 1
 fi
 
-if ! git diff --quiet || ! git diff --cached --quiet; then
-  echo "Working tree has uncommitted changes" >&2
-  exit 1
-fi
+ensure_clean_worktree
 
 if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
   echo "Tag ${tag} already exists" >&2
