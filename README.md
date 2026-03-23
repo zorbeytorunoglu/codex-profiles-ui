@@ -1,19 +1,19 @@
 <h1 align="center">Codex Profiles</h1>
 
-<p align="center">Manage multiple Codex CLI profiles and switch between them instantly.</p>
+<p align="center">Seamlessly switch between multiple Codex accounts</p>
 
 <p align="center">
-  <img src="https://img.shields.io/github/actions/workflow/status/midhunmonachan/codex-profiles/tests.yml?branch=main&label=tests" alt="Tests" />
-  <img src="https://img.shields.io/github/v/release/midhunmonachan/codex-profiles" alt="Release" />
-  <img src="https://img.shields.io/github/stars/midhunmonachan/codex-profiles?style=flat" alt="Stars" />
-  <img src="https://img.shields.io/github/license/midhunmonachan/codex-profiles?color=blue" alt="License" />
+  <a href="https://github.com/midhunmonachan/codex-profiles/actions/workflows/tests.yml"><img src="https://img.shields.io/github/actions/workflow/status/midhunmonachan/codex-profiles/tests.yml?branch=main&label=tests" alt="Tests" /></a>
+  <a href="https://github.com/midhunmonachan/codex-profiles/releases"><img src="https://img.shields.io/github/v/release/midhunmonachan/codex-profiles" alt="Release" /></a>
+  <a href="https://github.com/midhunmonachan/codex-profiles/stargazers"><img src="https://img.shields.io/github/stars/midhunmonachan/codex-profiles?style=flat" alt="Stars" /></a>
+  <a href="https://github.com/midhunmonachan/codex-profiles/blob/main/LICENSE"><img src="https://img.shields.io/github/license/midhunmonachan/codex-profiles?color=blue" alt="License" /></a>
 </p>
 
 <p align="center">
   <a href="#overview">Overview</a> •
   <a href="#install">Install</a> •
-  <a href="#uninstall">Uninstall</a> •
   <a href="#usage">Usage</a> •
+  <a href="#more-docs">More Docs</a> •
   <a href="#faq">FAQ</a>
 </p>
 
@@ -21,192 +21,179 @@
 
 ## Overview
 
-Codex Profiles helps you manage multiple Codex CLI logins on a single machine.
-It saves the current login and lets you switch in seconds, making it ideal for
-personal and team accounts across multiple organizations.
+Codex Profiles lets you save and switch easily between multiple Codex accounts without repeated `codex login`
 
 ## Install
 
-> [!NOTE]
-> `npm`, `bun`, and the manual installer use prebuilt native binaries. `cargo install --locked codex-profiles` builds locally from source if you prefer not to run prebuilt binaries.
+<table width="100%">
+  <colgroup>
+    <col style="width: 25%;" />
+    <col style="width: 75%;" />
+  </colgroup>
+  <thead>
+    <tr>
+      <th align="left">Method</th>
+      <th align="left" style="white-space: nowrap;">Command</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>npm</td>
+      <td style="white-space: nowrap;"><code>npm install -g codex-profiles</code></td>
+    </tr>
+    <tr>
+      <td>Bun</td>
+      <td style="white-space: nowrap;"><code>bun install -g codex-profiles</code></td>
+    </tr>
+  </tbody>
+</table>
 
-> [!TIP]
-> Looking for a Teams promo? [See details](https://www.reddit.com/r/ChatGPTPromptGenius/comments/1lo7v0u/chatgpt_team_for_1_first_month_up_to_5_users/)
-
-### NPM
-
-```bash
-npm install -g codex-profiles
-```
-
-### Bun
-
-```bash
-bun install -g codex-profiles
-```
-
-### Cargo
-
-```bash
-cargo install --locked codex-profiles
-```
-
-### Manual Install
-
-Automatically detects your OS/architecture, downloads the correct binary, and verifies checksums when verification tooling is available:
+### Manual install
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/midhunmonachan/codex-profiles/main/install.sh | bash
 ```
 
-## Uninstall
-
-### NPM
+<details>
+<summary>Advanced install option (build from source)</summary>
 
 ```bash
-npm uninstall -g codex-profiles
+cargo install --locked codex-profiles
 ```
 
-### Bun
+Requires Rust 1.94+
+
+</details>
+
+## Quick Start
 
 ```bash
-bun uninstall -g codex-profiles
-```
-
-### Cargo
-
-```bash
-cargo uninstall codex-profiles
-```
-
-### Manual Uninstall
-
-```bash
-rm ~/.local/bin/codex-profiles
+codex-profiles save --label work
+codex-profiles list
+codex-profiles load --label work --force
 ```
 
 ## Usage
 
-> [!TIP]
-> `load` and `delete` are interactive unless you pass `--label` or `--id`.
-> If the active profile is not saved, `load` also prompts before switching unless you pass `--force`.
-
-| Command | Description |
-| --- | --- |
-| `codex-profiles save [options]` | Save the active `auth.json` as a profile. Use `--label <name>` to label it. |
-| `codex-profiles load [options]` | Load a profile without re-login. Use `--label <name>`, `--id <profile-id>`, and `--force` as needed. |
-| `codex-profiles list [options]` | List saved profiles. Use `--show-id` or `--json` for alternate output. |
-| `codex-profiles export [options]` | Export saved profiles to a single JSON bundle. |
-| `codex-profiles import [options]` | Import saved profiles from a JSON bundle. |
-| `codex-profiles doctor [--fix] [--json]` | Run local diagnostics and optionally apply safe metadata and permission repairs. |
-| `codex-profiles label set [options]` | Add or replace a label on a saved profile. |
-| `codex-profiles label clear [options]` | Remove a label from a saved profile. |
-| `codex-profiles label rename [options]` | Rename an existing label without using set/clear manually. |
-| `codex-profiles status [options]` | Show usage for the active profile, a selected saved profile (`--label`/`--id`), or all saved profiles with `--all`. Use `--json` for structured output. |
-| `codex-profiles delete [options]` | Delete profiles. Use `--label <name>`, repeat `--id <profile-id>`, and `--yes` as needed. |
-
-Label examples: `codex-profiles label set --id <profile-id> --to work`, `codex-profiles label clear --label work`.
-
-`status --json` returns the active profile object (or `null`); `status --label/--id --json` returns the selected saved profile object (or `null` when no saved profiles exist); `status --all --json` returns a `profiles` array.
-
-`export --output <file>` exports all saved profiles by default. Use `--label` or repeated `--id` to export a smaller set.
-
-Export bundles contain secrets. Store them securely. `import` fails on id or label conflicts instead of overwriting existing state.
-
-`doctor --fix` repairs safe profile-storage metadata and Unix file permissions (missing storage files, restrictive modes for `auth.json` / profile storage, stale index refs, and a rebuild of `profiles.json` from saved profile files when needed). It does not delete invalid saved profile files; when it rebuilds a broken `profiles.json`, it writes `profiles.json.bak` (or `profiles.json.bak.N` if a backup already exists), and labels stored only in the broken index may need to be reconfigured.
-
-If you set `chatgpt_base_url` for status usage lookups, remote custom hosts are rejected unless they are the official ChatGPT hosts. Loopback addresses remain allowed for local testing.
-
-> [!WARNING]
-> Deleting a profile does not log you out. It only removes the saved profile file.
-
-Quick example:
-
-```console
-$ codex-profiles save --label team
-Saved profile mail@company.com (Team)
-
-$ codex-profiles load --label team
-Loaded profile mail@company.com (Team)
-```
-
 > [!NOTE]
-> Files are stored under `~/.codex/profiles/`:
->
-> | File | Purpose |
-> | --- | --- |
-> | `{email-plan}.json` | Saved profiles. |
-> | `profiles.json` | Profile metadata (labels and identity fields for saved profiles). |
-> | `update.json` | Cached updater state (latest checked version metadata). |
-> | `profiles.lock` | Lock file for safe updates. |
+> Codex Profiles data is stored under `~/.codex/profiles/` on your machine
+
+### Command Reference
+
+<table width="100%">
+  <thead>
+    <tr>
+      <th align="left" width="44%">Command</th>
+      <th align="left">Description</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td width="43%"><code>codex-profiles save</code><br/><code>[--label &lt;name&gt;]</code></td>
+      <td>Save current <code>auth.json</code><br/>Optional label</td>
+    </tr>
+    <tr>
+      <td width="43%"><code>codex-profiles load</code><br/><code>(--label &lt;name&gt; | --id &lt;profile-id&gt;)</code><br/><code>[--force]</code></td>
+      <td>Load a saved profile<br/>Choose a target profile and force when needed</td>
+    </tr>
+    <tr>
+      <td width="43%"><code>codex-profiles list</code><br/><code>[--show-id] [--json]</code></td>
+      <td>List profiles<br/>Supports id and JSON views</td>
+    </tr>
+    <tr>
+      <td width="44%"><code>codex-profiles export</code><br/><code>[--label &lt;name&gt;]</code><br/><code>[--id &lt;profile-id&gt; (repeatable)]</code></td>
+      <td>Export to a JSON bundle<br/>Default: all profiles, or a selected subset</td>
+    </tr>
+    <tr>
+      <td width="43%"><code>codex-profiles import</code><br/><code>--input &lt;file&gt;</code></td>
+      <td>Import from a JSON bundle</td>
+    </tr>
+    <tr>
+      <td width="43%"><code>codex-profiles doctor</code><br/><code>[--fix] [--json]</code></td>
+      <td>Run diagnostics and optionally apply safe repairs</td>
+    </tr>
+    <tr>
+      <td width="43%"><code>codex-profiles label set</code><br/><code>(--label &lt;name&gt; | --id &lt;profile-id&gt;)</code><br/><code>--to &lt;label&gt;</code></td>
+      <td>Set or replace a label<br/>Target one profile</td>
+    </tr>
+    <tr>
+      <td width="43%"><code>codex-profiles label clear</code><br/><code>(--label &lt;name&gt; | --id &lt;profile-id&gt;)</code></td>
+      <td>Clear a label<br/>Target one profile</td>
+    </tr>
+    <tr>
+      <td width="43%"><code>codex-profiles label rename</code><br/><code>--from &lt;label&gt; --to &lt;label&gt;</code></td>
+      <td>Rename an existing label</td>
+    </tr>
+    <tr>
+      <td width="44%"><code>codex-profiles status</code><br/><code>[--label &lt;name&gt; | --id &lt;profile-id&gt;]</code><br/><code>[--all] [--json]</code></td>
+      <td>Show usage for active, selected, or all targets<br/>Human-readable or JSON output</td>
+    </tr>
+    <tr>
+      <td width="44%"><code>codex-profiles delete</code><br/><code>[--label &lt;name&gt; | --id &lt;profile-id&gt; (repeatable)]</code><br/><code>[--yes]</code></td>
+      <td>Delete by label or id<br/>Supports bulk delete and non-interactive mode</td>
+    </tr>
+  </tbody>
+</table>
+
+### Notes
+
+- `load` and `delete` are interactive unless you pass `--label` or `--id`
+- Export bundles contain secrets
+
+## More Docs
+
+- [Release verification guide](https://github.com/midhunmonachan/codex-profiles/blob/main/docs/verification.md)
+- [Contribution guide](https://github.com/midhunmonachan/codex-profiles/blob/main/CONTRIBUTING.md)
 
 ## FAQ
 
 <details>
+<summary>How do I uninstall?</summary>
+
+> - npm: `npm uninstall -g codex-profiles`
+> - Bun: `bun uninstall -g codex-profiles`
+> - Cargo: `cargo uninstall codex-profiles`
+> - Manual: `rm ~/.local/bin/codex-profiles`
+</details>
+
+<details>
 <summary>Is my auth file uploaded anywhere?</summary>
 
-> No. Everything stays on your machine. This tool only copies files locally.
+> No. Everything stays on your machine. This tool only copies files locally
 </details>
 
 <details>
 <summary>What is a “profile” in this tool?</summary>
 
 > A profile is a saved copy of your `~/.codex/auth.json`. Each profile represents
-> one Codex login.
-</details>
-
-<details>
-<summary>How do I save and switch between accounts?</summary>
-
-> Log in with Codex CLI, then run `codex-profiles save --label <name>`. To switch
-> later, run `codex-profiles load --label <name>`.
+> one Codex account
 </details>
 
 <details>
 <summary>What happens if I run load without saving?</summary>
 
 > You will be prompted to save the active profile, continue without saving, or
-> cancel.
+> cancel
 </details>
 
 <details>
 <summary>Can I keep personal and work accounts separate?</summary>
 
 > Yes. Save each account with a label (for example, `personal` and `work`) and
-> switch with the label.
+> switch with the label
 </details>
 
 <details>
 <summary>How can I verify my installation?</summary>
 
-> After installing, verify it works:
->
 > ```bash
-> # Check version
 > codex-profiles --version
->
-> # Verify the command runs
 > codex-profiles list
-> # Should show: "No saved profiles." if you have not saved any profiles yet
 > ```
 </details>
 
 <details>
-<summary>How do I verify a release?</summary>
+<summary>Where are release verification steps documented?</summary>
 
-> See [docs/verification.md](docs/verification.md) for release manifests, checksums,
-> and GitHub attestation verification steps.
-</details>
-
-<details>
-<summary>Can I contribute to this project?</summary>
-
-> Yes! Contributions are welcome. For non-trivial changes (new features, significant
-> refactors), please open an [issue](https://github.com/midhunmonachan/codex-profiles/issues)
-> or [discussion](https://github.com/midhunmonachan/codex-profiles/discussions) first
-> to discuss your idea and avoid wasted effort.
->
-> For minor changes (bug fixes, typos, docs), feel free to submit a PR directly.
->
-> See [CONTRIBUTING.md](CONTRIBUTING.md) for full guidelines.
+> In [docs/verification.md](https://github.com/midhunmonachan/codex-profiles/blob/main/docs/verification.md)
 </details>
