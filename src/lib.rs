@@ -97,6 +97,9 @@ fn run(cli: Cli) -> Result<(), String> {
             }
         },
         Commands::Status { all, label, id } => status_profiles(&paths, all, label, id, json),
+        Commands::Dashboard { interval_secs } => {
+            dashboard::run_dashboard(&paths, interval_secs, json)
+        }
         Commands::Delete { yes, label, id } => delete_profile(&paths, yes, label, id, json),
     }
 }
@@ -131,6 +134,7 @@ fn run_update_action(action: UpdateAction) -> Result<(), String> {
 mod auth;
 mod cli;
 mod common;
+mod dashboard;
 mod doctor;
 mod json_response;
 mod messages;
@@ -217,5 +221,22 @@ mod tests {
             command: Commands::List { show_id: false },
         };
         run(cli).unwrap();
+    }
+
+    #[test]
+    fn run_cli_dashboard_rejects_json() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = make_paths(dir.path());
+        fs::create_dir_all(&paths.profiles).unwrap();
+        let home = dir.path().to_string_lossy().into_owned();
+        let _home = set_env_guard("CODEX_PROFILES_HOME", Some(&home));
+        let _skip = set_env_guard("CODEX_PROFILES_SKIP_UPDATE", Some("1"));
+        let cli = Cli {
+            plain: true,
+            json: true,
+            command: Commands::Dashboard { interval_secs: 300 },
+        };
+        let err = run(cli).unwrap_err();
+        assert!(err.contains("does not support `--json`"));
     }
 }

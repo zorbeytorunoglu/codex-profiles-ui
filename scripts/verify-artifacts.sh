@@ -64,11 +64,26 @@ if [[ "${has_release_assets}" -eq 0 ]]; then
   exit 1
 fi
 
-main_pkg="${npm_packages_dir}/codex-profiles-${version}.tgz"
-if [[ ! -f "${main_pkg}" ]]; then
-  echo "Missing npm main package: ${main_pkg}" >&2
-  exit 1
-fi
+expected_npm_tarballs=()
+while IFS= read -r package_name; do
+  tarball_basename="${package_name#@}"
+  tarball_basename="${tarball_basename//\//-}"
+  expected_npm_tarballs+=("${npm_packages_dir}/${tarball_basename}-${version}.tgz")
+done < <(node - <<'NODE'
+const pkg = require("./package.json");
+console.log(pkg.name);
+for (const dep of Object.keys(pkg.optionalDependencies || {})) {
+  console.log(dep);
+}
+NODE
+)
+
+for npm_tarball in "${expected_npm_tarballs[@]}"; do
+  if [[ ! -f "${npm_tarball}" ]]; then
+    echo "Missing npm package: ${npm_tarball}" >&2
+    exit 1
+  fi
+done
 
 crate="${cargo_dir}/codex-profiles-${version}.crate"
 if [[ ! -f "${crate}" ]]; then

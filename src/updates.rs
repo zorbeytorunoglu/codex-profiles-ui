@@ -13,12 +13,14 @@ use crate::{
     UPDATE_OPTION_SKIP_VERSION, UPDATE_PROMPT_SELECT, UPDATE_RELEASE_NOTES, UPDATE_TITLE_AVAILABLE,
 };
 
-// We use the latest version from the cask if installation is via homebrew - homebrew does not immediately pick up the latest release and can lag behind.
-const HOMEBREW_CASK_URL: &str =
-    "https://raw.githubusercontent.com/Homebrew/homebrew-cask/HEAD/Casks/c/codex-profiles.rb";
-const LATEST_RELEASE_URL: &str =
-    "https://api.github.com/repos/midhunmonachan/codex-profiles/releases/latest";
-const RELEASE_NOTES_URL: &str = "https://github.com/midhunmonachan/codex-profiles/releases/latest";
+const NPM_PACKAGE_NAME: &str = "@zorbeytorunoglu/codex-profiles";
+// Use the release-hosted cask file for this fork so Brew users check against
+// the same release channel that ships the binaries.
+const HOMEBREW_CASK_URL: &str = concat!(
+    env!("CARGO_PKG_REPOSITORY"),
+    "/releases/latest/download/codex-profiles.rb"
+);
+const RELEASE_NOTES_URL: &str = concat!(env!("CARGO_PKG_REPOSITORY"), "/releases/latest");
 #[cfg(test)]
 const HOMEBREW_CASK_URL_OVERRIDE_ENV_VAR: &str = "CODEX_PROFILES_HOMEBREW_CASK_URL";
 #[cfg(test)]
@@ -27,9 +29,9 @@ const LATEST_RELEASE_URL_OVERRIDE_ENV_VAR: &str = "CODEX_PROFILES_LATEST_RELEASE
 /// Update action the CLI should perform after the prompt exits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UpdateAction {
-    /// Update via `npm install -g codex-profiles`.
+    /// Update via `npm install -g @zorbeytorunoglu/codex-profiles`.
     NpmGlobalLatest,
-    /// Update via `bun install -g codex-profiles`.
+    /// Update via `bun install -g @zorbeytorunoglu/codex-profiles`.
     BunGlobalLatest,
     /// Update via `brew upgrade codex-profiles`.
     BrewUpgrade,
@@ -47,8 +49,8 @@ impl UpdateAction {
     /// Returns the list of command-line arguments for invoking the update.
     pub fn command_args(self) -> (&'static str, &'static [&'static str]) {
         match self {
-            UpdateAction::NpmGlobalLatest => ("npm", &["install", "-g", "codex-profiles"]),
-            UpdateAction::BunGlobalLatest => ("bun", &["install", "-g", "codex-profiles"]),
+            UpdateAction::NpmGlobalLatest => ("npm", &["install", "-g", NPM_PACKAGE_NAME]),
+            UpdateAction::BunGlobalLatest => ("bun", &["install", "-g", NPM_PACKAGE_NAME]),
             UpdateAction::BrewUpgrade => ("brew", &["upgrade", "codex-profiles"]),
         }
     }
@@ -553,11 +555,12 @@ fn update_agent() -> ureq::Agent {
 fn latest_release_url() -> String {
     #[cfg(test)]
     {
-        env_url(LATEST_RELEASE_URL_OVERRIDE_ENV_VAR, LATEST_RELEASE_URL)
+        std::env::var(LATEST_RELEASE_URL_OVERRIDE_ENV_VAR)
+            .unwrap_or_else(|_| default_latest_release_url())
     }
     #[cfg(not(test))]
     {
-        LATEST_RELEASE_URL.to_string()
+        default_latest_release_url()
     }
 }
 
@@ -569,6 +572,17 @@ fn homebrew_cask_url() -> String {
     #[cfg(not(test))]
     {
         HOMEBREW_CASK_URL.to_string()
+    }
+}
+
+fn default_latest_release_url() -> String {
+    let repository = env!("CARGO_PKG_REPOSITORY")
+        .trim_end_matches('/')
+        .trim_end_matches(".git");
+    if let Some(slug) = repository.strip_prefix("https://github.com/") {
+        format!("https://api.github.com/repos/{slug}/releases/latest")
+    } else {
+        format!("{repository}/releases/latest")
     }
 }
 
@@ -622,7 +636,7 @@ mod tests {
         );
 
         let bun_exe = PathBuf::from(
-            "/Users/dev/.bun/install/global/node_modules/codex-profiles/bin/codex-profiles",
+            "/Users/dev/.bun/install/global/node_modules/@zorbeytorunoglu/codex-profiles/bin/codex-profiles",
         );
         assert_eq!(
             detect_install_source_inner(false, &bun_exe, false, true),
@@ -789,7 +803,7 @@ mod tests {
             .expect("update cache");
         assert!(cache.last_prompted_at.is_none());
         let output = String::from_utf8(output).expect("utf8 output");
-        assert!(output.contains("Run `npm install -g codex-profiles` to update."));
+        assert!(output.contains("Run `npm install -g @zorbeytorunoglu/codex-profiles` to update."));
 
         let dir = tempfile::tempdir().expect("tempdir");
         let config = UpdateConfig {

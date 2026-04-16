@@ -17,6 +17,9 @@ if [[ ! -d "${artifacts_dir}" ]]; then
   exit 1
 fi
 
+root_package_name="$(node -p "require('./package.json').name")"
+repository_url="$(node -p "const repo = require('./package.json').repository; typeof repo === 'string' ? repo : repo.url")"
+
 rm -rf "${out_dir}"
 mkdir -p "${out_dir}"
 
@@ -29,34 +32,34 @@ fi
 
 for artifact_dir in "${artifact_dirs[@]}"; do
   target="${artifact_dir##*/codex-profiles-}"
-  pkg=""
+  pkg_suffix=""
   os=""
   cpu=""
   bin_name="codex-profiles"
 
   case "${target}" in
     x86_64-unknown-linux-gnu)
-      pkg="codex-profiles-linux-x64"
+      pkg_suffix="linux-x64"
       os="linux"
       cpu="x64"
       ;;
     aarch64-unknown-linux-gnu)
-      pkg="codex-profiles-linux-arm64"
+      pkg_suffix="linux-arm64"
       os="linux"
       cpu="arm64"
       ;;
     x86_64-apple-darwin)
-      pkg="codex-profiles-darwin-x64"
+      pkg_suffix="darwin-x64"
       os="darwin"
       cpu="x64"
       ;;
     aarch64-apple-darwin)
-      pkg="codex-profiles-darwin-arm64"
+      pkg_suffix="darwin-arm64"
       os="darwin"
       cpu="arm64"
       ;;
     x86_64-pc-windows-msvc)
-      pkg="codex-profiles-win32-x64"
+      pkg_suffix="win32-x64"
       os="win32"
       cpu="x64"
       bin_name="codex-profiles.exe"
@@ -66,6 +69,8 @@ for artifact_dir in "${artifact_dirs[@]}"; do
       continue
       ;;
   esac
+
+  pkg="${root_package_name}-${pkg_suffix}"
 
   pkg_dir="${out_dir}/${pkg}"
   mkdir -p "${pkg_dir}/bin"
@@ -83,13 +88,16 @@ for artifact_dir in "${artifact_dirs[@]}"; do
   "name": "${pkg}",
   "version": "${version}",
   "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
   "os": ["${os}"],
   "cpu": ["${cpu}"],
   "files": ["bin"],
   "description": "Prebuilt native binary for Codex Profiles",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/midhunmonachan/codex-profiles.git"
+    "url": "${repository_url}"
   }
 }
 JSON

@@ -5,7 +5,7 @@
 set -euo pipefail
 
 VERSION="${CODEX_PROFILES_VERSION:-}"
-REPO="midhunmonachan/codex-profiles"
+REPO="${CODEX_PROFILES_REPO:-zorbeytorunoglu/codex-profiles-ui}"
 INSTALL_DIR="${CODEX_PROFILES_INSTALL_DIR:-$HOME/.local/bin}"
 
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then

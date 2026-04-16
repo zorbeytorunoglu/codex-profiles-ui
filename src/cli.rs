@@ -98,6 +98,12 @@ pub enum Commands {
         )]
         id: Option<String>,
     },
+    /// Open the live profile dashboard
+    Dashboard {
+        /// Refresh interval in seconds
+        #[arg(long, value_name = "seconds", default_value_t = 300, value_parser = clap::value_parser!(u64).range(1..))]
+        interval_secs: u64,
+    },
     /// Delete saved profiles
     Delete {
         /// Skip delete confirmation
@@ -179,7 +185,7 @@ pub fn label_clear_usage(name: &str) -> String {
 
 fn examples_root(name: &str) -> String {
     format!(
-        "Examples:\n  {name} save --label work\n  {name} load --label work\n  {name} list --json\n  {name} status --all --json\n  {name} export --output profiles-export.json\n  {name} import --input profiles-export.json\n  {name} delete --label work --yes\n\nUse `--json` for machine-readable success output. Run `{name} help <command>` for command-specific options."
+        "Examples:\n  {name} save --label work\n  {name} load --label work\n  {name} list --json\n  {name} status --all --json\n  {name} dashboard --interval-secs 300\n  {name} export --output profiles-export.json\n  {name} import --input profiles-export.json\n  {name} delete --label work --yes\n\nUse `--json` for machine-readable success output. Run `{name} help <command>` for command-specific options."
     )
 }
 
@@ -192,6 +198,7 @@ mod tests {
         let text = examples_root("codex-profiles");
         assert!(text.contains("Examples:"));
         assert!(text.contains("Use `--json` for machine-readable success output."));
+        assert!(text.contains("dashboard --interval-secs 300"));
         assert!(!text.contains("Common options:"));
         assert!(!text.contains("Machine-readable output:"));
     }

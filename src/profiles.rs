@@ -71,8 +71,93 @@ struct PreparedImportProfile {
     tokens: Tokens,
 }
 
+pub(crate) struct SaveProfileResult {
+    pub(crate) id: String,
+    pub(crate) label: Option<String>,
+    pub(crate) email: Option<String>,
+    pub(crate) plan: Option<String>,
+}
+
+pub(crate) struct LoadProfileResult {
+    pub(crate) id: String,
+    pub(crate) label: Option<String>,
+    pub(crate) email: Option<String>,
+    pub(crate) plan: Option<String>,
+    pub(crate) warning: Option<String>,
+}
+
+#[derive(Clone)]
+pub(crate) struct DashboardUsage {
+    pub(crate) state: &'static str,
+    pub(crate) buckets: Vec<crate::usage::UsageSnapshotBucket>,
+    pub(crate) status_code: Option<u16>,
+    pub(crate) summary: Option<String>,
+    pub(crate) detail: Option<String>,
+}
+
+#[derive(Clone)]
+pub(crate) struct DashboardProfile {
+    pub(crate) id: Option<String>,
+    pub(crate) label: Option<String>,
+    pub(crate) email: Option<String>,
+    pub(crate) plan: Option<String>,
+    pub(crate) is_current: bool,
+    pub(crate) is_saved: bool,
+    pub(crate) is_api_key: bool,
+    pub(crate) display: String,
+    pub(crate) details: Vec<String>,
+    pub(crate) warnings: Vec<String>,
+    pub(crate) usage: Option<DashboardUsage>,
+    pub(crate) error_summary: Option<String>,
+}
+
+pub(crate) struct DashboardSnapshot {
+    pub(crate) profiles: Vec<DashboardProfile>,
+    pub(crate) refreshed_at: DateTime<Local>,
+    pub(crate) base_url_error: Option<String>,
+}
+
 pub fn save_profile(paths: &Paths, label: Option<String>, json: bool) -> Result<(), String> {
     let use_color = use_color_stdout();
+    let result = save_current_profile_internal(paths, label)?;
+
+    if json {
+        let result = CommandResultJson::success(
+            "save",
+            serde_json::json!({
+                "id": result.id,
+                "label": result.label,
+            }),
+        );
+        result.print()?;
+        return Ok(());
+    }
+
+    let display = crate::format_profile_display(
+        result.email.clone(),
+        result.plan.clone(),
+        result.label.clone(),
+        true,
+        use_color,
+    );
+    let message = if result.email.is_some() {
+        crate::msg1(PROFILE_MSG_SAVED_WITH, display)
+    } else {
+        PROFILE_MSG_SAVED.to_string()
+    };
+    let mut message = format_action(&message, use_color);
+    if result.label.is_none() {
+        message.push('\n');
+        message.push_str(&format_label_later_hint(&result.id, use_color));
+    }
+    print_output_block(&message);
+    Ok(())
+}
+
+pub(crate) fn save_current_profile_internal(
+    paths: &Paths,
+    label: Option<String>,
+) -> Result<SaveProfileResult, String> {
     let mut store = ProfileStore::load(paths)?;
     let tokens = read_tokens(&paths.auth)?;
     let id = resolve_save_id(paths, &mut store.profiles_index, &tokens)?;
@@ -84,40 +169,17 @@ pub fn save_profile(paths: &Paths, label: Option<String>, json: bool) -> Result<
     let target = profile_path_for_id(&paths.profiles, &id);
     copy_profile(&paths.auth, &target, PROFILE_COPY_CONTEXT_SAVE)?;
 
-    let label_display = label_for_id(&store.labels, &id);
-    update_profiles_index_entry(
-        &mut store.profiles_index,
-        &id,
-        Some(&tokens),
-        label_display.clone(),
-    );
+    let label = label_for_id(&store.labels, &id);
+    update_profiles_index_entry(&mut store.profiles_index, &id, Some(&tokens), label.clone());
     store.save(paths)?;
 
-    if json {
-        let result = CommandResultJson::success(
-            "save",
-            serde_json::json!({
-                "id": id,
-                "label": label_display,
-            }),
-        );
-        result.print()?;
-        return Ok(());
-    }
-
-    let info = profile_info(Some(&tokens), label_display.clone(), true, use_color);
-    let message = if info.email.is_some() {
-        crate::msg1(PROFILE_MSG_SAVED_WITH, info.display)
-    } else {
-        PROFILE_MSG_SAVED.to_string()
-    };
-    let mut message = format_action(&message, use_color);
-    if label_display.is_none() {
-        message.push('\n');
-        message.push_str(&format_label_later_hint(&id, use_color));
-    }
-    print_output_block(&message);
-    Ok(())
+    let (email, plan) = extract_email_and_plan(&tokens);
+    Ok(SaveProfileResult {
+        id,
+        label,
+        email,
+        plan,
+    })
 }
 
 pub fn set_profile_label(
@@ -422,11 +484,53 @@ pub fn load_profile(
         &snapshot,
         &candidates,
     )?;
-    let selected_id = selected.id.clone();
-    let selected_display = selected.display.clone();
+    let selected_is_current =
+        current_saved_id(paths, &snapshot.tokens).as_deref() == Some(selected.id.as_str());
+    let result = load_saved_profile_by_id(paths, &selected.id)?;
 
-    match snapshot.tokens.get(&selected_id) {
-        Some(Ok(_)) => {}
+    if let Some(warning) = result.warning.as_deref() {
+        let warning = format_warning(warning, use_color_err);
+        eprintln!("{warning}");
+    }
+
+    if json {
+        let result = CommandResultJson::success(
+            "load",
+            serde_json::json!({
+                "id": result.id,
+                "label": result.label,
+            }),
+        );
+        result.print()?;
+        return Ok(());
+    }
+
+    let mut display = crate::format_profile_display(
+        result.email,
+        result.plan,
+        result.label,
+        selected_is_current,
+        use_color_out,
+    );
+    if selected_is_current {
+        display.push_str(&current_profile_marker(use_color_out));
+    }
+    let message = format_action(
+        &crate::msg1(PROFILE_MSG_LOADED_WITH, display),
+        use_color_out,
+    );
+    print_output_block(&message);
+    Ok(())
+}
+
+pub(crate) fn load_saved_profile_by_id(
+    paths: &Paths,
+    selected_id: &str,
+) -> Result<LoadProfileResult, String> {
+    let use_color_err = use_color_stderr();
+    let snapshot = load_snapshot(paths, true)?;
+    let tokens = match snapshot.tokens.get(selected_id) {
+        Some(Ok(tokens)) => tokens,
         Some(Err(err)) => {
             let message = err
                 .strip_prefix(&format!("{} ", UI_ERROR_PREFIX))
@@ -436,53 +540,35 @@ pub fn load_profile(
         None => {
             return Err(profile_not_found(use_color_err));
         }
-    }
+    };
 
     let mut store = ProfileStore::load(paths)?;
+    let warning = sync_current(paths, &mut store.profiles_index).err();
 
-    if let Err(err) = sync_current(paths, &mut store.profiles_index) {
-        let warning = format_warning(&err, use_color_err);
-        eprintln!("{warning}");
-    }
-
-    let source = profile_path_for_id(&paths.profiles, &selected_id);
+    let source = profile_path_for_id(&paths.profiles, selected_id);
     if !source.is_file() {
         return Err(profile_not_found(use_color_err));
     }
 
     copy_profile(&source, &paths.auth, PROFILE_COPY_CONTEXT_LOAD)?;
 
-    let label = label_for_id(&store.labels, &selected_id);
-    let tokens = snapshot
-        .tokens
-        .get(&selected_id)
-        .and_then(|result| result.as_ref().ok());
+    let label = label_for_id(&store.labels, selected_id);
     update_profiles_index_entry(
         &mut store.profiles_index,
-        &selected_id,
-        tokens,
+        selected_id,
+        Some(tokens),
         label.clone(),
     );
     store.save(paths)?;
 
-    if json {
-        let result = CommandResultJson::success(
-            "load",
-            serde_json::json!({
-                "id": selected_id,
-                "label": label,
-            }),
-        );
-        result.print()?;
-        return Ok(());
-    }
-
-    let message = format_action(
-        &crate::msg1(PROFILE_MSG_LOADED_WITH, selected_display),
-        use_color_out,
-    );
-    print_output_block(&message);
-    Ok(())
+    let (email, plan) = extract_email_and_plan(tokens);
+    Ok(LoadProfileResult {
+        id: selected_id.to_string(),
+        label,
+        email,
+        plan,
+        warning,
+    })
 }
 
 pub fn delete_profile(
@@ -775,6 +861,46 @@ fn status_all_profiles(paths: &Paths, json: bool) -> Result<(), String> {
     let output = lines.join("\n");
     print_output_block(&output);
     Ok(())
+}
+
+pub(crate) fn collect_dashboard_snapshot(paths: &Paths) -> Result<DashboardSnapshot, String> {
+    let snapshot = load_snapshot(paths, false)?;
+    let current_saved_id = current_saved_id(paths, &snapshot.tokens);
+    let mut ctx = ListCtx::new(paths, true, true, false);
+    ctx.use_color = false;
+
+    let ordered = ordered_profile_ids(&snapshot, current_saved_id.as_deref());
+    let filtered: Vec<String> = ordered
+        .into_iter()
+        .filter(|id| current_saved_id.as_deref() != Some(id.as_str()))
+        .collect();
+
+    let refreshed_at = ctx.now;
+    let base_url_error = ctx.base_url_error.clone();
+    let (current_entry, list_entries) = rayon::join(
+        || {
+            make_current(
+                paths,
+                current_saved_id.as_deref(),
+                &snapshot.labels,
+                &snapshot.tokens,
+                &ctx,
+            )
+        },
+        || make_entries(&filtered, &snapshot, None, &ctx),
+    );
+
+    let mut profiles = Vec::new();
+    if let Some(entry) = current_entry {
+        profiles.push(entry_to_dashboard_profile(entry));
+    }
+    profiles.extend(list_entries.into_iter().map(entry_to_dashboard_profile));
+
+    Ok(DashboardSnapshot {
+        profiles,
+        refreshed_at,
+        base_url_error,
+    })
 }
 
 pub type Labels = BTreeMap<String, String>;
@@ -1542,6 +1668,11 @@ pub(crate) fn unsaved_reason(
         return Some(PROFILE_UNSAVED_NO_MATCH.to_string());
     }
     None
+}
+
+pub(crate) fn active_profile_unsaved_reason(paths: &Paths) -> Result<Option<String>, String> {
+    let snapshot = load_snapshot(paths, false)?;
+    Ok(unsaved_reason(paths, &snapshot.tokens))
 }
 
 pub(crate) fn current_saved_id(
@@ -2821,6 +2952,43 @@ fn print_all_status_json(profiles: Vec<Entry>) -> Result<(), String> {
     Ok(())
 }
 
+fn entry_to_dashboard_profile(entry: Entry) -> DashboardProfile {
+    DashboardProfile {
+        id: entry.id,
+        label: entry.label,
+        email: entry.email,
+        plan: entry.plan,
+        is_current: entry.is_current,
+        is_saved: entry.is_saved,
+        is_api_key: entry.is_api_key,
+        display: crate::sanitize_for_terminal(&entry.display),
+        details: entry
+            .details
+            .into_iter()
+            .map(|detail| crate::sanitize_for_terminal(&detail))
+            .collect(),
+        warnings: entry
+            .warnings
+            .into_iter()
+            .map(|warning| crate::sanitize_for_terminal(&warning))
+            .collect(),
+        usage: entry.usage.map(|usage| DashboardUsage {
+            state: usage.state,
+            buckets: usage.buckets,
+            status_code: usage.status_code,
+            summary: usage
+                .summary
+                .map(|summary| crate::sanitize_for_terminal(&summary)),
+            detail: usage
+                .detail
+                .map(|detail| crate::sanitize_for_terminal(&detail)),
+        }),
+        error_summary: entry
+            .error_summary
+            .map(|summary| crate::sanitize_for_terminal(&summary)),
+    }
+}
+
 fn handle_inquire_result<T>(
     result: Result<T, inquire::error::InquireError>,
     context: &str,
@@ -3552,5 +3720,74 @@ mod tests {
             ids.iter()
                 .any(|id| id.starts_with("same@example.com-pro-acct"))
         );
+    }
+
+    #[test]
+    fn internal_save_and_load_helpers_roundtrip_profiles() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = make_paths(dir.path());
+        fs::create_dir_all(&paths.profiles).unwrap();
+        crate::ensure_paths(&paths).unwrap();
+
+        write_auth(
+            &paths.auth,
+            "acct-alpha",
+            "alpha@example.com",
+            "team",
+            "acc-a",
+            "ref-a",
+        );
+        let alpha = save_current_profile_internal(&paths, Some("alpha".to_string())).unwrap();
+
+        write_auth(
+            &paths.auth,
+            "acct-beta",
+            "beta@example.com",
+            "team",
+            "acc-b",
+            "ref-b",
+        );
+        let beta = save_current_profile_internal(&paths, Some("beta".to_string())).unwrap();
+        assert_ne!(alpha.id, beta.id);
+
+        load_saved_profile_by_id(&paths, &alpha.id).unwrap();
+        let current = read_tokens(&paths.auth).unwrap();
+        let (email, plan) = extract_email_and_plan(&current);
+        assert_eq!(email.as_deref(), Some("alpha@example.com"));
+        assert_eq!(plan.as_deref(), Some("Team"));
+    }
+
+    #[test]
+    fn dashboard_snapshot_collects_saved_profiles() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = make_paths(dir.path());
+        fs::create_dir_all(&paths.profiles).unwrap();
+        crate::ensure_paths(&paths).unwrap();
+
+        write_auth(
+            &paths.auth,
+            "acct-alpha",
+            "alpha@example.com",
+            "team",
+            "acc-a",
+            "ref-a",
+        );
+        save_current_profile_internal(&paths, Some("alpha".to_string())).unwrap();
+        write_auth(
+            &paths.auth,
+            "acct-beta",
+            "beta@example.com",
+            "team",
+            "acc-b",
+            "ref-b",
+        );
+        save_current_profile_internal(&paths, Some("beta".to_string())).unwrap();
+
+        let snapshot = collect_dashboard_snapshot(&paths).unwrap();
+        assert_eq!(snapshot.profiles.len(), 2);
+        assert!(snapshot.profiles.iter().any(|profile| profile.is_current));
+        assert!(snapshot.profiles.iter().any(|profile| {
+            profile.label.as_deref() == Some("alpha") || profile.label.as_deref() == Some("beta")
+        }));
     }
 }

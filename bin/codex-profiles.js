@@ -2,7 +2,7 @@
 // Unified entry point for Codex Profiles.
 
 import { spawn } from "node:child_process";
-import { existsSync } from "fs";
+import { existsSync, readFileSync } from "fs";
 import { createRequire } from "module";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -13,20 +13,24 @@ const __dirname = path.dirname(__filename);
 
 const { platform, arch } = process;
 const require = createRequire(import.meta.url);
+const rootPackageJson = JSON.parse(
+  readFileSync(path.join(__dirname, "..", "package.json"), "utf8")
+);
 
-const PLATFORM_PACKAGES = {
-  "linux-x64": "codex-profiles-linux-x64",
-  "linux-arm64": "codex-profiles-linux-arm64",
-  "darwin-x64": "codex-profiles-darwin-x64",
-  "darwin-arm64": "codex-profiles-darwin-arm64",
-  "win32-x64": "codex-profiles-win32-x64",
+const PLATFORM_PACKAGE_SUFFIXES = {
+  "linux-x64": "linux-x64",
+  "linux-arm64": "linux-arm64",
+  "darwin-x64": "darwin-x64",
+  "darwin-arm64": "darwin-arm64",
+  "win32-x64": "win32-x64",
 };
 
 const platformKey = `${platform}-${arch}`;
-const platformPackage = PLATFORM_PACKAGES[platformKey];
-if (!platformPackage) {
+const platformPackageSuffix = PLATFORM_PACKAGE_SUFFIXES[platformKey];
+if (!platformPackageSuffix) {
   throw new Error(`Unsupported platform: ${platform} (${arch})`);
 }
+const platformPackage = `${rootPackageJson.name}-${platformPackageSuffix}`;
 
 let packageJsonPath = null;
 try {

@@ -29,6 +29,11 @@ fi
 mkdir -p "${out_dir}"
 artifacts_dir="$(cd "${artifacts_dir}" && pwd)"
 out_dir="$(cd "${out_dir}" && pwd)"
+package_repository_url="$(node -p "const repo = require('./package.json').repository; typeof repo === 'string' ? repo : repo.url")"
+normalized_repository_url="${package_repository_url#git+}"
+normalized_repository_url="${normalized_repository_url%.git}"
+normalized_repository_url="${normalized_repository_url%/}"
+default_repository="${normalized_repository_url#https://github.com/}"
 
 release_dir="${out_dir}/release"
 npm_dir="${out_dir}/npm"
@@ -80,7 +85,18 @@ for artifact_dir in "${artifact_dirs[@]}"; do
 done
 
 scripts/package-npm.sh "${version}" "${artifacts_dir}" "${npm_dir}"
-package_dirs=("${npm_dir}"/*)
+package_dirs=()
+while IFS= read -r pkg_dir; do
+  package_dirs+=("${pkg_dir}")
+done < <(python3 - <<'PY' "${npm_dir}"
+from pathlib import Path
+import sys
+
+root = Path(sys.argv[1])
+for pkg_dir in sorted({str(path.parent) for path in root.rglob("package.json")}):
+    print(pkg_dir)
+PY
+)
 if [[ ${#package_dirs[@]} -eq 0 ]]; then
   echo "No npm package directories generated under ${npm_dir}" >&2
   exit 1
@@ -109,17 +125,17 @@ cask "codex-profiles" do
 
   on_arm do
     sha256 "${darwin_arm_sha}"
-    url "https://github.com/midhunmonachan/codex-profiles/releases/download/v#{version}/codex-profiles-aarch64-apple-darwin.tar.gz"
+    url "${normalized_repository_url}/releases/download/v#{version}/codex-profiles-aarch64-apple-darwin.tar.gz"
   end
 
   on_intel do
     sha256 "${darwin_x64_sha}"
-    url "https://github.com/midhunmonachan/codex-profiles/releases/download/v#{version}/codex-profiles-x86_64-apple-darwin.tar.gz"
+    url "${normalized_repository_url}/releases/download/v#{version}/codex-profiles-x86_64-apple-darwin.tar.gz"
   end
 
   name "Codex Profiles"
   desc "Seamlessly switch between multiple Codex accounts"
-  homepage "https://github.com/midhunmonachan/codex-profiles"
+  homepage "${normalized_repository_url}"
 
   binary "codex-profiles"
 end
@@ -153,7 +169,7 @@ done
 shopt -u nullglob
 
 manifest_file="${checksums_dir}/release-manifest.json"
-repository="${GITHUB_REPOSITORY:-midhunmonachan/codex-profiles}"
+repository="${GITHUB_REPOSITORY:-${default_repository}}"
 repository_url="https://github.com/${repository}"
 commit_sha="$(git rev-parse HEAD 2>/dev/null || true)"
 generated_at="$(python3 - <<'PY'

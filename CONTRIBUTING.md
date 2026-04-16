@@ -6,7 +6,7 @@ Thanks for helping improve Codex Profiles.
 
 **For non-trivial changes (new features, significant refactors, breaking changes):**
 
-Please open an [issue](https://github.com/midhunmonachan/codex-profiles/issues) or [discussion](https://github.com/midhunmonachan/codex-profiles/discussions) first to:
+Please open an [issue](https://github.com/zorbeytorunoglu/codex-profiles-ui/issues) or [discussion](https://github.com/zorbeytorunoglu/codex-profiles-ui/discussions) first to:
 - Discuss your proposed changes
 - Get feedback on your approach
 - Confirm the feature/fix aligns with project goals
@@ -112,6 +112,24 @@ make release-tag ARGS="--bump patch"
 resolves the latest published release automatically, and you can still pin a
 specific version with `CODEX_PROFILES_VERSION` or `--version`.
 
+## GitHub release workflow
+
+Releases are published by [`release.yml`](.github/workflows/release.yml).
+Push a `vX.Y.Z` tag or run the workflow manually with an existing tag to:
+
+- build binaries for all supported targets
+- generate GitHub release assets and npm tarballs
+- publish npm packages with trusted publishing
+- create or update the GitHub release
+
+Configure npm trusted publishing for `@zorbeytorunoglu/codex-profiles` against
+this repository before relying on the workflow for npm releases.
+
+crates.io publishing is intentionally disabled by default for this fork. Enable
+it only if you actually control the crate by setting repository variable
+`PUBLISH_CRATES=true` and adding `CARGO_REGISTRY_TOKEN` in GitHub Actions
+secrets.
+
 ## Questions?
 
-Not sure if your idea fits? Ask in [Discussions](https://github.com/midhunmonachan/codex-profiles/discussions) - we're happy to help!
+Not sure if your idea fits? Ask in [Discussions](https://github.com/zorbeytorunoglu/codex-profiles-ui/discussions) - we're happy to help!

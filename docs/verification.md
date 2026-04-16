@@ -15,7 +15,7 @@ Download the release asset you want to inspect together with `SHA256SUMS` and
 ```bash
 TAG="vX.Y.Z"
 gh release download "$TAG" \
-  --repo midhunmonachan/codex-profiles \
+  --repo zorbeytorunoglu/codex-profiles-ui \
   --pattern 'SHA256SUMS' \
   --pattern 'release-manifest.json' \
   --pattern 'codex-profiles-x86_64-unknown-linux-gnu.tar.gz'
@@ -44,7 +44,7 @@ Use the GitHub CLI to verify a release asset attestation:
 
 ```bash
 gh attestation verify codex-profiles-x86_64-unknown-linux-gnu.tar.gz \
-  -R midhunmonachan/codex-profiles
+  -R zorbeytorunoglu/codex-profiles-ui
 ```
 
 Replace the asset name with the file you downloaded from the release.

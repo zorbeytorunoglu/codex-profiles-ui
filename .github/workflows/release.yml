@@ -186,6 +186,35 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           ref: ${{ needs.tag-check.outputs.tag }}
+      - id: metadata
+        name: Resolve publish metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          import tomllib
+          from pathlib import Path
+
+          package = json.loads(Path("package.json").read_text(encoding="utf-8"))
+          repository = package["repository"]
+          repository_url = repository if isinstance(repository, str) else repository["url"]
+          repository_url = (
+              repository_url.removeprefix("git+")
+              .removesuffix(".git")
+              .rstrip("/")
+          )
+          prefix = "https://github.com/"
+          if not repository_url.startswith(prefix):
+              raise SystemExit(f"Unsupported repository URL: {repository_url}")
+
+          cargo = tomllib.loads(Path("Cargo.toml").read_text(encoding="utf-8"))
+
+          print(f"expected_repository={repository_url[len(prefix):]}")
+          print(f"root_npm_package_name={package['name']}")
+          print(f"cargo_package_name={cargo['package']['name']}")
+          PY
       - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7
         with:
           toolchain: 1.94.0
@@ -231,13 +260,15 @@ jobs:
 
       - name: Commit checksums to repo
         shell: bash
+        env:
+          EXPECTED_REPOSITORY: ${{ steps.metadata.outputs.expected_repository }}
         run: |
           set -euo pipefail
           version="${{ needs.tag-check.outputs.version }}"
 
-          # Safety gate: only commit to production repository
-          if [[ "${GITHUB_REPOSITORY}" != "midhunmonachan/codex-profiles" ]]; then
-            echo "Skipping checksum commit: not production repository (current: ${GITHUB_REPOSITORY})"
+          # Safety gate: only commit to the configured release repository
+          if [[ "${GITHUB_REPOSITORY}" != "${EXPECTED_REPOSITORY}" ]]; then
+            echo "Skipping checksum commit: not release repository (current: ${GITHUB_REPOSITORY}, expected: ${EXPECTED_REPOSITORY})"
             echo "Checksums generated but not committed to repo"
             ls -la dist/checksums/
             exit 0
@@ -276,11 +307,20 @@ jobs:
         if: ${{ needs.tag-check.outputs.prerelease != 'true' }}
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          EXPECTED_REPOSITORY: ${{ steps.metadata.outputs.expected_repository }}
+          CARGO_PACKAGE_NAME: ${{ steps.metadata.outputs.cargo_package_name }}
+          PUBLISH_CRATES: ${{ vars.PUBLISH_CRATES }}
         run: |
           set -euo pipefail
-          # Safety gate: only publish from production repository
-          if [[ "${GITHUB_REPOSITORY}" != "midhunmonachan/codex-profiles" ]]; then
-            echo "Skipping crates.io publish: not production repository (current: ${GITHUB_REPOSITORY})"
+
+          if [[ "${PUBLISH_CRATES}" != "true" ]]; then
+            echo "Skipping crates.io publish: repository variable PUBLISH_CRATES is not true"
+            exit 0
+          fi
+
+          # Safety gate: only publish from the configured release repository
+          if [[ "${GITHUB_REPOSITORY}" != "${EXPECTED_REPOSITORY}" ]]; then
+            echo "Skipping crates.io publish: not release repository (current: ${GITHUB_REPOSITORY}, expected: ${EXPECTED_REPOSITORY})"
             exit 0
           fi
 
@@ -291,8 +331,8 @@ jobs:
           fi
 
           version="${{ needs.tag-check.outputs.version }}"
-          if curl -fsS "https://crates.io/api/v1/crates/codex-profiles/${version}" >/dev/null 2>&1; then
-            echo "codex-profiles ${version} is already published to crates.io; skipping"
+          if curl -fsS "https://crates.io/api/v1/crates/${CARGO_PACKAGE_NAME}/${version}" >/dev/null 2>&1; then
+            echo "${CARGO_PACKAGE_NAME} ${version} is already published to crates.io; skipping"
             exit 0
           fi
 
@@ -301,11 +341,14 @@ jobs:
 
       - name: Publish to npm
         if: ${{ needs.tag-check.outputs.prerelease != 'true' }}
+        env:
+          EXPECTED_REPOSITORY: ${{ steps.metadata.outputs.expected_repository }}
+          ROOT_NPM_PACKAGE_NAME: ${{ steps.metadata.outputs.root_npm_package_name }}
         run: |
           set -euo pipefail
-          # Safety gate: only publish from production repository
-          if [[ "${GITHUB_REPOSITORY}" != "midhunmonachan/codex-profiles" ]]; then
-            echo "Skipping npm publish: not production repository (current: ${GITHUB_REPOSITORY})"
+          # Safety gate: only publish from the configured release repository
+          if [[ "${GITHUB_REPOSITORY}" != "${EXPECTED_REPOSITORY}" ]]; then
+            echo "Skipping npm publish: not release repository (current: ${GITHUB_REPOSITORY}, expected: ${EXPECTED_REPOSITORY})"
             exit 0
           fi
 
@@ -343,12 +386,28 @@ jobs:
             npm publish "$pkg" --access public --provenance
           }
 
+          root_pkg=""
+          platform_pkgs=()
+          shopt -s nullglob
+          for pkg in dist/npm-packages/*.tgz; do
+            name="$(package_name "$pkg")"
+            if [[ "${name}" == "${ROOT_NPM_PACKAGE_NAME}" ]]; then
+              root_pkg="${pkg}"
+            else
+              platform_pkgs+=("${pkg}")
+            fi
+          done
+          shopt -u nullglob
+
+          [[ ${#platform_pkgs[@]} -gt 0 ]] || { echo "No platform npm packages found"; exit 1; }
+          [[ -n "${root_pkg}" ]] || { echo "Root npm package tarball not found"; exit 1; }
+
           # Publish platform packages first so optionalDependencies can resolve.
-          for pkg in dist/npm-packages/codex-profiles-*-*.tgz; do
+          for pkg in "${platform_pkgs[@]}"; do
             publish_if_missing "$pkg"
           done
 
-          publish_if_missing "dist/npm-packages/codex-profiles-${version}.tgz"
+          publish_if_missing "${root_pkg}"
 
       - name: Create or update GitHub release
         uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b # v2

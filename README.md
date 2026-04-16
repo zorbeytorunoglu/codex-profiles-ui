@@ -3,10 +3,10 @@
 <p align="center">Seamlessly switch between multiple Codex accounts</p>
 
 <p align="center">
-  <a href="https://github.com/midhunmonachan/codex-profiles/actions/workflows/tests.yml"><img src="https://img.shields.io/github/actions/workflow/status/midhunmonachan/codex-profiles/tests.yml?branch=main&label=tests" alt="Tests" /></a>
-  <a href="https://github.com/midhunmonachan/codex-profiles/releases"><img src="https://img.shields.io/github/v/release/midhunmonachan/codex-profiles" alt="Release" /></a>
-  <a href="https://github.com/midhunmonachan/codex-profiles/stargazers"><img src="https://img.shields.io/github/stars/midhunmonachan/codex-profiles?style=flat" alt="Stars" /></a>
-  <a href="https://github.com/midhunmonachan/codex-profiles/blob/main/LICENSE"><img src="https://img.shields.io/github/license/midhunmonachan/codex-profiles?color=blue" alt="License" /></a>
+  <a href="https://github.com/zorbeytorunoglu/codex-profiles-ui/actions/workflows/tests.yml"><img src="https://img.shields.io/github/actions/workflow/status/zorbeytorunoglu/codex-profiles-ui/tests.yml?branch=main&label=tests" alt="Tests" /></a>
+  <a href="https://github.com/zorbeytorunoglu/codex-profiles-ui/releases"><img src="https://img.shields.io/github/v/release/zorbeytorunoglu/codex-profiles-ui" alt="Release" /></a>
+  <a href="https://github.com/zorbeytorunoglu/codex-profiles-ui/stargazers"><img src="https://img.shields.io/github/stars/zorbeytorunoglu/codex-profiles-ui?style=flat" alt="Stars" /></a>
+  <a href="https://github.com/zorbeytorunoglu/codex-profiles-ui/blob/main/LICENSE"><img src="https://img.shields.io/github/license/zorbeytorunoglu/codex-profiles-ui?color=blue" alt="License" /></a>
 </p>
 
 <p align="center">
@@ -39,11 +39,11 @@ Codex Profiles lets you save and switch easily between multiple Codex accounts w
   <tbody>
     <tr>
       <td>npm</td>
-      <td style="white-space: nowrap;"><code>npm install -g codex-profiles</code></td>
+      <td style="white-space: nowrap;"><code>npm install -g @zorbeytorunoglu/codex-profiles</code></td>
     </tr>
     <tr>
       <td>Bun</td>
-      <td style="white-space: nowrap;"><code>bun install -g codex-profiles</code></td>
+      <td style="white-space: nowrap;"><code>bun install -g @zorbeytorunoglu/codex-profiles</code></td>
     </tr>
   </tbody>
 </table>
@@ -51,7 +51,7 @@ Codex Profiles lets you save and switch easily between multiple Codex accounts w
 ### Manual install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/midhunmonachan/codex-profiles/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/zorbeytorunoglu/codex-profiles-ui/main/install.sh | bash
 ```
 
 <details>
@@ -70,6 +70,7 @@ Requires Rust 1.94+
 ```bash
 codex-profiles save --label work
 codex-profiles list
+codex-profiles dashboard
 codex-profiles load --label work --force
 ```
 
@@ -129,6 +130,10 @@ codex-profiles load --label work --force
       <td>Show usage for active, selected, or all targets<br/>Human-readable or JSON output</td>
     </tr>
     <tr>
+      <td width="44%"><code>codex-profiles dashboard</code><br/><code>[--interval-secs &lt;seconds&gt;]</code></td>
+      <td>Open a live TUI dashboard<br/>Refreshes profile status and lets you load the selected profile</td>
+    </tr>
+    <tr>
       <td width="44%"><code>codex-profiles delete</code><br/><code>[--label &lt;name&gt; | --id &lt;profile-id&gt; (repeatable)]</code><br/><code>[--yes]</code></td>
       <td>Delete by label or id<br/>Supports bulk delete and non-interactive mode</td>
     </tr>
@@ -138,20 +143,21 @@ codex-profiles load --label work --force
 ### Notes
 
 - `load` and `delete` are interactive unless you pass `--label` or `--id`
+- `dashboard` uses an interactive terminal UI with automatic refresh and manual load controls
 - Export bundles contain secrets
 
 ## More Docs
 
-- [Release verification guide](https://github.com/midhunmonachan/codex-profiles/blob/main/docs/verification.md)
-- [Contribution guide](https://github.com/midhunmonachan/codex-profiles/blob/main/CONTRIBUTING.md)
+- [Release verification guide](https://github.com/zorbeytorunoglu/codex-profiles-ui/blob/main/docs/verification.md)
+- [Contribution guide](https://github.com/zorbeytorunoglu/codex-profiles-ui/blob/main/CONTRIBUTING.md)
 
 ## FAQ
 
 <details>
 <summary>How do I uninstall?</summary>
 
-> - npm: `npm uninstall -g codex-profiles`
-> - Bun: `bun uninstall -g codex-profiles`
+> - npm: `npm uninstall -g @zorbeytorunoglu/codex-profiles`
+> - Bun: `bun uninstall -g @zorbeytorunoglu/codex-profiles`
 > - Cargo: `cargo uninstall codex-profiles`
 > - Manual: `rm ~/.local/bin/codex-profiles`
 </details>
@@ -195,5 +201,5 @@ codex-profiles load --label work --force
 <details>
 <summary>Where are release verification steps documented?</summary>
 
-> In [docs/verification.md](https://github.com/midhunmonachan/codex-profiles/blob/main/docs/verification.md)
+> In [docs/verification.md](https://github.com/zorbeytorunoglu/codex-profiles-ui/blob/main/docs/verification.md)
 </details>

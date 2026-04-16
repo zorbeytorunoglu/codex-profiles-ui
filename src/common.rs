@@ -25,6 +25,7 @@ use crate::{
 
 const UNEXPECTED_HTTP_BODY_MAX_BYTES: usize = 1000;
 
+#[derive(Clone)]
 pub struct Paths {
     pub codex: PathBuf,
     pub auth: PathBuf,
