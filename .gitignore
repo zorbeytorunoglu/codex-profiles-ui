@@ -6,6 +6,7 @@
 # Development folders
 /.code
 /.sisyphus
+/.idea
 
 # Python
 __pycache__/
