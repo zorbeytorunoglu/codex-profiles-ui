@@ -1,4 +1,5 @@
 use chrono::{DateTime, Duration, Utc};
+use semver::Version;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::IsTerminal as _;
@@ -362,10 +363,15 @@ fn check_for_update_with_action(
 
 #[doc(hidden)]
 pub fn is_newer(latest: &str, current: &str) -> Option<bool> {
-    match (parse_version(latest), parse_version(current)) {
-        (Some(l), Some(c)) => Some(l > c),
-        _ => None,
+    let latest = parse_version(latest)?;
+    let current = parse_version(current)?;
+
+    // Stable installs should not be prompted to update into prerelease builds.
+    if !latest.pre.is_empty() && current.pre.is_empty() {
+        return None;
     }
+
+    Some(latest > current)
 }
 
 #[doc(hidden)]
@@ -483,12 +489,8 @@ fn mark_prompted_now(config: &UpdateConfig) -> Result<(), String> {
     write_update_cache(&paths, &info)
 }
 
-fn parse_version(v: &str) -> Option<(u64, u64, u64)> {
-    let mut iter = v.trim().split('.');
-    let maj = iter.next()?.parse::<u64>().ok()?;
-    let min = iter.next()?.parse::<u64>().ok()?;
-    let pat = iter.next()?.parse::<u64>().ok()?;
-    Some((maj, min, pat))
+fn parse_version(v: &str) -> Option<Version> {
+    Version::parse(v.trim()).ok()
 }
 
 fn updates_disabled_with_debug(config: &UpdateConfig, is_debug: bool) -> bool {
@@ -669,8 +671,13 @@ mod tests {
 
     #[test]
     fn parse_version_and_compare() {
-        assert_eq!(parse_version("1.2.3"), Some((1, 2, 3)));
+        assert_eq!(parse_version("1.2.3"), Some(Version::new(1, 2, 3)));
+        assert_eq!(
+            parse_version("1.2.3-alpha.1"),
+            Some(Version::parse("1.2.3-alpha.1").unwrap())
+        );
         assert!(is_newer("2.0.0", "1.9.9").unwrap());
+        assert!(is_newer("1.2.3", "1.2.3-alpha.1").unwrap());
         assert!(is_newer("bad", "1.0.0").is_none());
     }
 
@@ -803,7 +810,14 @@ mod tests {
             .expect("update cache");
         assert!(cache.last_prompted_at.is_none());
         let output = String::from_utf8(output).expect("utf8 output");
-        assert!(output.contains("Run `npm install -g @zorbeytorunoglu/codex-profiles` to update."));
+        let expected_prompt = crate::msg1(
+            UPDATE_NON_TTY_RUN,
+            UpdateAction::NpmGlobalLatest.command_str(),
+        );
+        assert!(
+            output.contains(&expected_prompt),
+            "expected prompt {expected_prompt:?} in output {output:?}"
+        );
 
         let dir = tempfile::tempdir().expect("tempdir");
         let config = UpdateConfig {
