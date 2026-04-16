@@ -1,6 +1,6 @@
 {
   "name": "@zorbeytorunoglu/codex-profiles",
-  "version": "0.3.0",
+  "version": "0.3.1-alpha.1",
   "description": "Seamlessly switch between multiple Codex accounts",
   "license": "MIT",
   "bin": {
@@ -14,11 +14,11 @@
     "access": "public"
   },
   "optionalDependencies": {
-    "@zorbeytorunoglu/codex-profiles-darwin-arm64": "0.3.0",
-    "@zorbeytorunoglu/codex-profiles-darwin-x64": "0.3.0",
-    "@zorbeytorunoglu/codex-profiles-linux-arm64": "0.3.0",
-    "@zorbeytorunoglu/codex-profiles-linux-x64": "0.3.0",
-    "@zorbeytorunoglu/codex-profiles-win32-x64": "0.3.0"
+    "@zorbeytorunoglu/codex-profiles-darwin-arm64": "0.3.1-alpha.1",
+    "@zorbeytorunoglu/codex-profiles-darwin-x64": "0.3.1-alpha.1",
+    "@zorbeytorunoglu/codex-profiles-linux-arm64": "0.3.1-alpha.1",
+    "@zorbeytorunoglu/codex-profiles-linux-x64": "0.3.1-alpha.1",
+    "@zorbeytorunoglu/codex-profiles-win32-x64": "0.3.1-alpha.1"
   },
   "files": [
     "bin"
