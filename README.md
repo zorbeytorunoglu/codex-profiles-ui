@@ -1,6 +1,6 @@
-<h1 align="center">Codex Profiles</h1>
+<h1 align="center">Codex Profiles UI</h1>
 
-<p align="center">Seamlessly switch between multiple Codex accounts</p>
+<p align="center">Manage and switch Codex accounts with a live terminal dashboard</p>
 
 <p align="center">
   <a href="https://github.com/zorbeytorunoglu/codex-profiles-ui/actions/workflows/tests.yml"><img src="https://img.shields.io/github/actions/workflow/status/zorbeytorunoglu/codex-profiles-ui/tests.yml?branch=main&label=tests" alt="Tests" /></a>
@@ -11,6 +11,7 @@
 
 <p align="center">
   <a href="#overview">Overview</a> •
+  <a href="#dashboard-ui">Dashboard UI</a> •
   <a href="#install">Install</a> •
   <a href="#usage">Usage</a> •
   <a href="#more-docs">More Docs</a> •
@@ -21,7 +22,25 @@
 
 ## Overview
 
-Codex Profiles lets you save and switch easily between multiple Codex accounts without repeated `codex login`
+Codex Profiles UI focuses on an interactive dashboard for monitoring profile status and switching accounts quickly without repeated `codex login`.
+
+## Dashboard UI
+
+The `dashboard` command is the main experience in this fork.
+
+- View all profiles in one table, including active marker, account, plan, state, and usage summary
+- Monitor usage windows (5h and 7d) and warning/error state changes in near real time
+- Inspect detailed status, warnings, and usage diagnostics for the selected profile
+- Load a selected profile directly from the dashboard
+- Handle unsaved active changes safely with explicit choices:
+`s` save current profile then load, `f` force load without saving, `Esc` cancel
+- Refresh automatically (default every 300 seconds) or manually with `r`
+
+Dashboard keys:
+- `up/down` or `j/k`: move selection
+- `enter` or `l`: load selected profile
+- `r`: refresh now
+- `q` or `Ctrl+C`: quit
 
 ## Install
 
@@ -70,8 +89,7 @@ Requires Rust 1.94+
 ```bash
 codex-profiles save --label work
 codex-profiles list
-codex-profiles dashboard
-codex-profiles load --label work --force
+codex-profiles dashboard --interval-secs 120
 ```
 
 ## Usage
@@ -131,7 +149,7 @@ codex-profiles load --label work --force
     </tr>
     <tr>
       <td width="44%"><code>codex-profiles dashboard</code><br/><code>[--interval-secs &lt;seconds&gt;]</code></td>
-      <td>Open a live TUI dashboard<br/>Refreshes profile status and lets you load the selected profile</td>
+      <td>Open the live TUI dashboard<br/>Track status and usage, inspect details, and load selected profiles</td>
     </tr>
     <tr>
       <td width="44%"><code>codex-profiles delete</code><br/><code>[--label &lt;name&gt; | --id &lt;profile-id&gt; (repeatable)]</code><br/><code>[--yes]</code></td>
@@ -143,7 +161,8 @@ codex-profiles load --label work --force
 ### Notes
 
 - `load` and `delete` are interactive unless you pass `--label` or `--id`
-- `dashboard` uses an interactive terminal UI with automatic refresh and manual load controls
+- `dashboard` requires an interactive terminal (TTY)
+- `dashboard` auto-refreshes and can be manually refreshed with `r`
 - Export bundles contain secrets
 
 ## More Docs

@@ -29,6 +29,11 @@ fn run_cli_with_args(args: Vec<std::ffi::OsString>) -> Result<(), String> {
                 println!();
                 return Ok(());
             }
+            if err.kind() == ErrorKind::DisplayVersion {
+                let _ = err.print();
+                println!();
+                return Ok(());
+            }
             return Err(err.to_string());
         }
     };
@@ -177,6 +182,12 @@ mod tests {
     #[test]
     fn run_cli_with_args_display_help() {
         let args = vec![OsString::from("codex-profiles"), OsString::from("--help")];
+        run_cli_with_args(args).unwrap();
+    }
+
+    #[test]
+    fn run_cli_with_args_display_version() {
+        let args = vec![OsString::from("codex-profiles"), OsString::from("--version")];
         run_cli_with_args(args).unwrap();
     }
 
