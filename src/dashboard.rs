@@ -19,9 +19,9 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState, Wrap};
 
 use crate::{
-    DashboardProfile, DashboardSnapshot, Paths, active_profile_unsaved_reason,
-    collect_dashboard_snapshot, command_name, is_plain, load_saved_profile_by_id,
-    save_current_profile_internal,
+    DashboardProfile, DashboardProfileRefresh, DashboardProfileTarget, DashboardSnapshot, Paths,
+    active_profile_unsaved_reason, collect_dashboard_profile_refresh, collect_dashboard_snapshot,
+    command_name, is_plain, load_saved_profile_by_id, save_current_profile_internal,
 };
 
 const POLL_INTERVAL: Duration = Duration::from_millis(200);
@@ -73,6 +73,7 @@ struct WorkerHandle {
 
 enum WorkerCommand {
     Refresh,
+    RefreshSelected(DashboardProfileTarget),
     Load {
         profile_id: String,
         save_before_load: bool,
@@ -81,6 +82,7 @@ enum WorkerCommand {
 
 enum WorkerEvent {
     Refreshed(Result<DashboardSnapshot, String>),
+    SelectedRefreshed(Box<Result<DashboardProfileRefresh, String>>),
     LoadFinished(Result<LoadOutcome, String>),
 }
 
@@ -93,7 +95,7 @@ struct DashboardApp {
     paths: Paths,
     worker: WorkerHandle,
     refresh_interval: Duration,
-    next_refresh_at: Instant,
+    auto_refresh: AutoRefreshState,
     profiles: Vec<DashboardProfile>,
     table_state: TableState,
     last_refresh_at: Option<DateTime<Local>>,
@@ -113,8 +115,14 @@ struct PendingLoadConfirmation {
 #[derive(Clone, Copy)]
 enum BusyState {
     Idle,
-    Refreshing,
+    RefreshingAll,
+    RefreshingSelected,
     Loading,
+}
+
+enum AutoRefreshState {
+    Running { next_refresh_at: Instant },
+    Paused { remaining: Duration },
 }
 
 struct Banner {
@@ -144,7 +152,9 @@ impl DashboardApp {
             worker: spawn_worker(paths.clone()),
             paths,
             refresh_interval,
-            next_refresh_at: Instant::now(),
+            auto_refresh: AutoRefreshState::Running {
+                next_refresh_at: Instant::now(),
+            },
             profiles: Vec::new(),
             table_state: TableState::default(),
             last_refresh_at: None,
@@ -202,6 +212,13 @@ impl DashboardApp {
                         Err(err) => self.set_banner(BannerKind::Error, err),
                     }
                 }
+                Ok(WorkerEvent::SelectedRefreshed(result)) => {
+                    self.busy = BusyState::Idle;
+                    match *result {
+                        Ok(refresh) => self.apply_selected_refresh(refresh),
+                        Err(err) => self.set_banner(BannerKind::Error, err),
+                    }
+                }
                 Ok(WorkerEvent::LoadFinished(result)) => {
                     self.busy = BusyState::Idle;
                     match result {
@@ -233,7 +250,7 @@ impl DashboardApp {
         self.base_url_error = snapshot.base_url_error;
         self.profiles = snapshot.profiles;
         self.restore_selection(selected_key);
-        self.next_refresh_at = Instant::now() + self.refresh_interval;
+        self.reset_auto_refresh_after_full_refresh();
         if matches!(
             self.banner.as_ref().map(|banner| banner.kind),
             Some(BannerKind::Info)
@@ -249,10 +266,61 @@ impl DashboardApp {
         }
     }
 
+    fn apply_selected_refresh(&mut self, refresh: DashboardProfileRefresh) {
+        let DashboardProfileRefresh {
+            target,
+            profile,
+            refreshed_at,
+            base_url_error,
+        } = refresh;
+
+        self.base_url_error = base_url_error;
+
+        let profile_name = profile_title(&profile);
+        let replaced = match target {
+            DashboardProfileTarget::Current => self
+                .profiles
+                .iter()
+                .position(|profile| profile.is_current)
+                .map(|index| {
+                    self.profiles[index] = profile;
+                })
+                .is_some(),
+            DashboardProfileTarget::Saved(id) => self
+                .profiles
+                .iter()
+                .position(|profile| {
+                    !profile.is_current && profile.id.as_deref() == Some(id.as_str())
+                })
+                .map(|index| {
+                    self.profiles[index] = profile;
+                })
+                .is_some(),
+        };
+
+        if replaced {
+            self.set_banner(
+                BannerKind::Success,
+                format!(
+                    "Refreshed selected profile {profile_name} at {}",
+                    refreshed_at.format("%H:%M:%S")
+                ),
+            );
+        } else {
+            self.set_banner(
+                BannerKind::Warning,
+                "Selected profile changed externally. Run a full refresh.".to_string(),
+            );
+        }
+    }
+
     fn should_auto_refresh(&self) -> bool {
         self.confirm_load.is_none()
             && matches!(self.busy, BusyState::Idle)
-            && Instant::now() >= self.next_refresh_at
+            && matches!(
+                self.auto_refresh,
+                AutoRefreshState::Running { next_refresh_at } if Instant::now() >= next_refresh_at
+            )
     }
 
     fn handle_key(&mut self, key: KeyEvent) -> Result<bool, String> {
@@ -269,6 +337,10 @@ impl DashboardApp {
 
         match key.code {
             KeyCode::Char('q') => Ok(true),
+            KeyCode::Char('p') => {
+                self.toggle_auto_refresh();
+                Ok(false)
+            }
             KeyCode::Up | KeyCode::Char('k') => {
                 self.select_previous();
                 Ok(false)
@@ -280,6 +352,12 @@ impl DashboardApp {
             KeyCode::Char('r') => {
                 if matches!(self.busy, BusyState::Idle) {
                     self.start_refresh()?;
+                }
+                Ok(false)
+            }
+            KeyCode::Char('R') => {
+                if matches!(self.busy, BusyState::Idle) {
+                    self.start_refresh_selected()?;
                 }
                 Ok(false)
             }
@@ -355,10 +433,26 @@ impl DashboardApp {
     }
 
     fn start_refresh(&mut self) -> Result<(), String> {
-        self.busy = BusyState::Refreshing;
+        self.busy = BusyState::RefreshingAll;
         self.worker
             .commands
             .send(WorkerCommand::Refresh)
+            .map_err(|_| "Error: Dashboard worker stopped unexpectedly.".to_string())
+    }
+
+    fn start_refresh_selected(&mut self) -> Result<(), String> {
+        let Some(target) = self.selected_refresh_target() else {
+            self.set_banner(
+                BannerKind::Info,
+                "Select a profile to refresh it.".to_string(),
+            );
+            return Ok(());
+        };
+
+        self.busy = BusyState::RefreshingSelected;
+        self.worker
+            .commands
+            .send(WorkerCommand::RefreshSelected(target))
             .map_err(|_| "Error: Dashboard worker stopped unexpectedly.".to_string())
     }
 
@@ -423,13 +517,64 @@ impl DashboardApp {
         self.banner = Some(Banner { kind, text });
     }
 
+    fn selected_refresh_target(&self) -> Option<DashboardProfileTarget> {
+        let profile = self.selected_profile()?;
+        if profile.is_current {
+            return Some(DashboardProfileTarget::Current);
+        }
+        profile.id.clone().map(DashboardProfileTarget::Saved)
+    }
+
+    fn toggle_auto_refresh(&mut self) {
+        self.auto_refresh = match self.auto_refresh {
+            AutoRefreshState::Running { next_refresh_at } => {
+                let remaining = next_refresh_at.saturating_duration_since(Instant::now());
+                self.set_banner(BannerKind::Info, "Auto-refresh paused.".to_string());
+                AutoRefreshState::Paused { remaining }
+            }
+            AutoRefreshState::Paused { remaining } => {
+                self.set_banner(BannerKind::Info, "Auto-refresh resumed.".to_string());
+                AutoRefreshState::Running {
+                    next_refresh_at: Instant::now() + remaining,
+                }
+            }
+        };
+    }
+
+    fn reset_auto_refresh_after_full_refresh(&mut self) {
+        self.auto_refresh = match self.auto_refresh {
+            AutoRefreshState::Running { .. } => AutoRefreshState::Running {
+                next_refresh_at: Instant::now() + self.refresh_interval,
+            },
+            AutoRefreshState::Paused { .. } => AutoRefreshState::Paused {
+                remaining: self.refresh_interval,
+            },
+        };
+    }
+
+    fn next_refresh_text(&self) -> String {
+        match self.auto_refresh {
+            AutoRefreshState::Running { next_refresh_at } => {
+                format_duration(next_refresh_at.saturating_duration_since(Instant::now()))
+            }
+            AutoRefreshState::Paused { .. } => "paused".to_string(),
+        }
+    }
+
+    fn pause_key_label(&self) -> &'static str {
+        match self.auto_refresh {
+            AutoRefreshState::Running { .. } => "pause",
+            AutoRefreshState::Paused { .. } => "resume",
+        }
+    }
+
     fn draw(&mut self, frame: &mut Frame<'_>) {
         let areas = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(4),
                 Constraint::Min(8),
-                Constraint::Length(2),
+                Constraint::Length(3),
             ])
             .split(frame.area());
 
@@ -535,7 +680,10 @@ impl DashboardApp {
         let block = Block::default().borders(Borders::ALL).title(title);
         let text = if let Some(profile) = self.selected_profile() {
             selected_profile_text(profile)
-        } else if matches!(self.busy, BusyState::Refreshing) {
+        } else if matches!(
+            self.busy,
+            BusyState::RefreshingAll | BusyState::RefreshingSelected
+        ) {
             "Refreshing profile status...".to_string()
         } else {
             "Select a profile to inspect it.".to_string()
@@ -545,13 +693,33 @@ impl DashboardApp {
     }
 
     fn draw_footer(&self, frame: &mut Frame<'_>, area: Rect) {
-        let text = if self.confirm_load.is_some() {
-            "s save active and load  f force load  esc cancel  q quit"
+        let line = if self.confirm_load.is_some() {
+            Line::from(vec![
+                shortcut_span("s", "save+load"),
+                Span::raw("  "),
+                shortcut_span("f", "force load"),
+                Span::raw("  "),
+                shortcut_span("Esc", "cancel"),
+                Span::raw("  "),
+                shortcut_span("q", "quit"),
+            ])
         } else {
-            "up/down move  enter load  r refresh  q quit"
+            Line::from(vec![
+                shortcut_span("up/down", "move"),
+                Span::raw("  "),
+                shortcut_span("Enter", "load"),
+                Span::raw("  "),
+                shortcut_span("r", "refresh all"),
+                Span::raw("  "),
+                shortcut_span("R", "selected"),
+                Span::raw("  "),
+                shortcut_span("p", self.pause_key_label()),
+                Span::raw("  "),
+                shortcut_span("q", "quit"),
+            ])
         };
         let paragraph =
-            Paragraph::new(text).block(Block::default().borders(Borders::ALL).title("Keys"));
+            Paragraph::new(line).block(Block::default().borders(Borders::ALL).title("Controls"));
         frame.render_widget(paragraph, area);
     }
 
@@ -597,19 +765,11 @@ impl DashboardApp {
             .last_refresh_at
             .map(|time| time.format("%H:%M:%S").to_string())
             .unwrap_or_else(|| "pending".to_string());
-        let next = if matches!(self.busy, BusyState::Idle) {
-            format_duration(
-                self.next_refresh_at
-                    .saturating_duration_since(Instant::now()),
-            )
-        } else {
-            "--:--".to_string()
-        };
         format!(
-            "Profiles: {} | Last refresh: {} | Next refresh: {} | {}",
+            "Profiles: {} | Last full refresh: {} | Next auto refresh: {} | {}",
             self.profiles.len(),
             last,
-            next,
+            self.next_refresh_text(),
             self.busy.label()
         )
     }
@@ -619,7 +779,8 @@ impl BusyState {
     fn label(self) -> &'static str {
         match self {
             BusyState::Idle => "Idle",
-            BusyState::Refreshing => "Refreshing",
+            BusyState::RefreshingAll => "Refreshing all",
+            BusyState::RefreshingSelected => "Refreshing selected",
             BusyState::Loading => "Loading profile",
         }
     }
@@ -636,6 +797,18 @@ impl ProfileState {
     }
 }
 
+fn shortcut_span(key: &str, label: &str) -> Span<'static> {
+    let style = if is_plain() {
+        Style::default().add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
+    };
+    Span::styled(format!(" {key} {label} "), style)
+}
+
 fn spawn_worker(paths: Paths) -> WorkerHandle {
     let (commands_tx, commands_rx) = mpsc::channel();
     let (events_tx, events_rx) = mpsc::channel();
@@ -646,6 +819,9 @@ fn spawn_worker(paths: Paths) -> WorkerHandle {
                 WorkerCommand::Refresh => {
                     WorkerEvent::Refreshed(collect_dashboard_snapshot(&paths))
                 }
+                WorkerCommand::RefreshSelected(target) => WorkerEvent::SelectedRefreshed(Box::new(
+                    collect_dashboard_profile_refresh(&paths, target),
+                )),
                 WorkerCommand::Load {
                     profile_id,
                     save_before_load,
@@ -868,6 +1044,7 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_utils::make_paths;
 
     #[test]
     fn truncate_text_adds_ellipsis_only_when_needed() {
@@ -891,5 +1068,89 @@ mod tests {
         };
 
         assert_eq!(bucket_overview(&bucket).as_deref(), Some("5h 88% / 7d 51%"));
+    }
+
+    #[test]
+    fn header_status_text_shows_paused_auto_refresh() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = make_paths(dir.path());
+        let app = DashboardApp {
+            paths: paths.clone(),
+            worker: spawn_worker(paths),
+            refresh_interval: Duration::from_secs(300),
+            auto_refresh: AutoRefreshState::Paused {
+                remaining: Duration::from_secs(90),
+            },
+            profiles: Vec::new(),
+            table_state: TableState::default(),
+            last_refresh_at: None,
+            base_url_error: None,
+            banner: None,
+            busy: BusyState::Idle,
+            confirm_load: None,
+        };
+
+        assert!(
+            app.header_status_text()
+                .contains("Next auto refresh: paused")
+        );
+    }
+
+    #[test]
+    fn apply_selected_refresh_replaces_saved_profile_in_place() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = make_paths(dir.path());
+        let worker = spawn_worker(paths.clone());
+        let mut app = DashboardApp {
+            paths,
+            worker,
+            refresh_interval: Duration::from_secs(300),
+            auto_refresh: AutoRefreshState::Running {
+                next_refresh_at: Instant::now() + Duration::from_secs(300),
+            },
+            profiles: vec![
+                dashboard_profile(Some("alpha"), Some("old-alpha"), false),
+                dashboard_profile(Some("beta"), Some("old-beta"), false),
+            ],
+            table_state: TableState::default(),
+            last_refresh_at: None,
+            base_url_error: None,
+            banner: None,
+            busy: BusyState::Idle,
+            confirm_load: None,
+        };
+        app.table_state.select(Some(1));
+
+        app.apply_selected_refresh(DashboardProfileRefresh {
+            target: DashboardProfileTarget::Saved("beta".to_string()),
+            profile: dashboard_profile(Some("beta"), Some("new-beta"), false),
+            refreshed_at: Local::now(),
+            base_url_error: None,
+        });
+
+        assert_eq!(app.profiles[0].label.as_deref(), Some("old-alpha"));
+        assert_eq!(app.profiles[1].label.as_deref(), Some("new-beta"));
+        assert_eq!(app.table_state.selected(), Some(1));
+    }
+
+    fn dashboard_profile(
+        id: Option<&str>,
+        label: Option<&str>,
+        is_current: bool,
+    ) -> DashboardProfile {
+        DashboardProfile {
+            id: id.map(str::to_string),
+            label: label.map(str::to_string),
+            email: Some("profile@example.com".to_string()),
+            plan: Some("Team".to_string()),
+            is_current,
+            is_saved: true,
+            is_api_key: false,
+            display: label.unwrap_or("profile").to_string(),
+            details: Vec::new(),
+            warnings: Vec::new(),
+            usage: None,
+            error_summary: None,
+        }
     }
 }

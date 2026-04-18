@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-04-19
+
+### Added
+
+- dashboard controls for pausing auto-refresh and refreshing only the selected profile
+
+### Changed
+
+- dashboard footer now renders refresh and load actions as button-like control hints, and manual refresh distinguishes full-dashboard vs selected-profile checks
+
 ## [0.3.0]
 
 ### Added
@@ -127,7 +137,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Pre-commit hooks for code quality
 - Binary releases for 5 platforms (Linux x64/ARM64, macOS Intel/Apple Silicon, Windows x64)
 
-[Unreleased]: https://github.com/zorbeytorunoglu/codex-profiles-ui/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/zorbeytorunoglu/codex-profiles-ui/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/zorbeytorunoglu/codex-profiles-ui/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/zorbeytorunoglu/codex-profiles-ui/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/zorbeytorunoglu/codex-profiles-ui/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/zorbeytorunoglu/codex-profiles-ui/releases/tag/v0.1.0

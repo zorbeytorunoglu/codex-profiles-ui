@@ -111,8 +111,21 @@ pub(crate) struct DashboardProfile {
     pub(crate) error_summary: Option<String>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum DashboardProfileTarget {
+    Current,
+    Saved(String),
+}
+
 pub(crate) struct DashboardSnapshot {
     pub(crate) profiles: Vec<DashboardProfile>,
+    pub(crate) refreshed_at: DateTime<Local>,
+    pub(crate) base_url_error: Option<String>,
+}
+
+pub(crate) struct DashboardProfileRefresh {
+    pub(crate) target: DashboardProfileTarget,
+    pub(crate) profile: DashboardProfile,
     pub(crate) refreshed_at: DateTime<Local>,
     pub(crate) base_url_error: Option<String>,
 }
@@ -898,6 +911,47 @@ pub(crate) fn collect_dashboard_snapshot(paths: &Paths) -> Result<DashboardSnaps
 
     Ok(DashboardSnapshot {
         profiles,
+        refreshed_at,
+        base_url_error,
+    })
+}
+
+pub(crate) fn collect_dashboard_profile_refresh(
+    paths: &Paths,
+    target: DashboardProfileTarget,
+) -> Result<DashboardProfileRefresh, String> {
+    let snapshot = load_snapshot(paths, false)?;
+    let current_saved_id = current_saved_id(paths, &snapshot.tokens);
+    let mut ctx = ListCtx::new(paths, true, true, false);
+    ctx.use_color = false;
+
+    let refreshed_at = ctx.now;
+    let base_url_error = ctx.base_url_error.clone();
+    let entry = match &target {
+        DashboardProfileTarget::Current => make_current(
+            paths,
+            current_saved_id.as_deref(),
+            &snapshot.labels,
+            &snapshot.tokens,
+            &ctx,
+        )
+        .ok_or_else(|| "Error: No active profile to refresh.".to_string())?,
+        DashboardProfileTarget::Saved(id) => {
+            let mut entries = make_entries(
+                std::slice::from_ref(id),
+                &snapshot,
+                current_saved_id.as_deref(),
+                &ctx,
+            );
+            entries
+                .pop()
+                .ok_or_else(|| crate::msg1(PROFILE_ERR_ID_NOT_FOUND, id))?
+        }
+    };
+
+    Ok(DashboardProfileRefresh {
+        target,
+        profile: entry_to_dashboard_profile(entry),
         refreshed_at,
         base_url_error,
     })

@@ -34,12 +34,16 @@ The `dashboard` command is the main experience in this fork.
 - Load a selected profile directly from the dashboard
 - Handle unsaved active changes safely with explicit choices:
 `s` save current profile then load, `f` force load without saving, `Esc` cancel
-- Refresh automatically (default every 300 seconds) or manually with `r`
+- Pause or resume timed checks with `p`
+- Refresh the whole dashboard with `r` or only the selected profile with `Shift+R`
+- Refresh automatically by default every 300 seconds when not paused
 
 Dashboard keys:
 - `up/down` or `j/k`: move selection
 - `enter` or `l`: load selected profile
-- `r`: refresh now
+- `p`: pause or resume timed checks
+- `r`: refresh all profiles now
+- `Shift+R`: refresh selected profile only
 - `q` or `Ctrl+C`: quit
 
 ## Install
@@ -162,7 +166,7 @@ codex-profiles dashboard --interval-secs 120
 
 - `load` and `delete` are interactive unless you pass `--label` or `--id`
 - `dashboard` requires an interactive terminal (TTY)
-- `dashboard` auto-refreshes and can be manually refreshed with `r`
+- `dashboard` auto-refreshes by default, can be paused with `p`, and supports manual full or selected-profile refresh
 - Export bundles contain secrets
 
 ## More Docs

@@ -187,7 +187,10 @@ mod tests {
 
     #[test]
     fn run_cli_with_args_display_version() {
-        let args = vec![OsString::from("codex-profiles"), OsString::from("--version")];
+        let args = vec![
+            OsString::from("codex-profiles"),
+            OsString::from("--version"),
+        ];
         run_cli_with_args(args).unwrap();
     }
 
