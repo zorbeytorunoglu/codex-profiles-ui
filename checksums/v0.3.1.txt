@@ -1,0 +1,13 @@
+48d3029dbcc0ce55b842934ca1c6b5482e0e99c4d6d69dd97592828a4f859338  codex-profiles-aarch64-apple-darwin.tar.gz
+0443e1d1f60e8ee394721bef5ba88d90de8cbf9633dd8d816e540a794498c945  codex-profiles-aarch64-unknown-linux-gnu.tar.gz
+abe375c69d6cf4a11812c56e28481dd73369c6a9ac8514f88a7b7d3b6a377f4f  codex-profiles-x86_64-apple-darwin.tar.gz
+eea9613ae1f523addb1366fab771d7733745c85f2faee466e492ebe6534efbda  codex-profiles-x86_64-pc-windows-msvc.exe.zip
+457ca96378b36fb4da572083df9450b7676d134701c0c372b29fbb713230d5db  codex-profiles-x86_64-unknown-linux-gnu.tar.gz
+0d6c9a25a438b91cd0c29bed0d01d53f8c43a538be2919bf5c94ec77333a3262  zorbeytorunoglu-codex-profiles-0.3.1.tgz
+e2c9f03209fa4946d8e89274fe25de0e934f271cb321ae88a800553d67f1477e  zorbeytorunoglu-codex-profiles-darwin-arm64-0.3.1.tgz
+f5718e572919b5f7ebc3d80d61f7125ab0ac77ba985ce7eb4f3afd5a12fc7cbb  zorbeytorunoglu-codex-profiles-darwin-x64-0.3.1.tgz
+5caf26235157e6e528f730cef4bb7f9ff59c5b7b5a620cf8be7f35b79636ec5d  zorbeytorunoglu-codex-profiles-linux-arm64-0.3.1.tgz
+402388fbfa4dbc12a9093ec59507c4c83001f7c31abe3b2d811f363e61ccf48f  zorbeytorunoglu-codex-profiles-linux-x64-0.3.1.tgz
+a242163afef2912a7b1611578cba4eddb432be46744e242b9c251a9a0e2db702  zorbeytorunoglu-codex-profiles-win32-x64-0.3.1.tgz
+20b3be74b9a1ed762cc0cc0ba3c83d7ac4b247d144065ec6ae81855ee9d21af4  codex-profiles-0.3.1.crate
+ed17c6fed60cfe8b75fde56fa229a65c608260aa5f7f904e70c22de21f60bae1  codex-profiles.rb
